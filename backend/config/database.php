@@ -1,7 +1,20 @@
 <?php
 
 use Illuminate\Support\Str;
-use Pdo\Mysql;
+
+$mysqlSslCa = env('MYSQL_ATTR_SSL_CA');
+if (! is_string($mysqlSslCa) || $mysqlSslCa === '' || ! is_file($mysqlSslCa)) {
+    $mysqlSslCa = is_file('/etc/ssl/certs/ca-certificates.crt')
+        ? '/etc/ssl/certs/ca-certificates.crt'
+        : null;
+}
+
+$mysqlOptions = extension_loaded('pdo_mysql')
+    ? [PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => false]
+    : [];
+if ($mysqlOptions !== [] && $mysqlSslCa !== null) {
+    $mysqlOptions[PDO::MYSQL_ATTR_SSL_CA] = $mysqlSslCa;
+}
 
 return [
 
@@ -59,9 +72,7 @@ return [
             'prefix_indexes' => true,
             'strict' => true,
             'engine' => null,
-            'options' => extension_loaded('pdo_mysql') ? array_filter([
-                Mysql::ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
-            ]) : [],
+            'options' => $mysqlOptions,
         ],
 
         'mariadb' => [
@@ -80,7 +91,9 @@ return [
             'strict' => true,
             'engine' => null,
             'options' => extension_loaded('pdo_mysql') ? array_filter([
-                Mysql::ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
+                PDO::MYSQL_ATTR_SSL_CA => file_exists('/etc/ssl/certs/ca-certificates.crt')
+                    ? '/etc/ssl/certs/ca-certificates.crt'
+                    : base_path('cacert.pem'),
             ]) : [],
         ],
 

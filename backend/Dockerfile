@@ -4,6 +4,7 @@ WORKDIR /app
 
 # ដំឡើង System packages និង Extensions សម្រាប់ PHP 8.4
 RUN apk add --no-cache \
+    ca-certificates \
     curl \
     git \
     zip \
@@ -28,4 +29,4 @@ RUN composer install --ignore-platform-reqs --no-dev --optimize-autoloader --no-
 EXPOSE 8000
 
 # Start Laravel
-CMD php artisan package:discover --ansi && php artisan serve --host=0.0.0.0 --port=${PORT:-8000}
+CMD php artisan migrate --force --seed && php artisan package:discover --ansi && php artisan serve --host=0.0.0.0 --port=${PORT:-8000}
