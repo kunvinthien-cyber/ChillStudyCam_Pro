@@ -10,8 +10,6 @@ class RoomSeeder extends Seeder
     public function run(): void
     {
         // សម្អាតបន្ទប់ចាស់ៗសិន
-        Room::truncate();
-
         $rooms = [
             // 🎓 ១. បន្ទប់ថ្នាក់ទី ១២ (បាក់ឌុប)
             [
@@ -80,7 +78,7 @@ class RoomSeeder extends Seeder
         ];
 
         foreach ($rooms as $r) {
-            Room::create($r);
+            Room::updateOrCreate(['title' => $r['title']], $r);
         }
     }
 }
