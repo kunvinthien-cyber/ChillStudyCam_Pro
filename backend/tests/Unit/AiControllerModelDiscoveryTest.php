@@ -281,7 +281,7 @@ class AiControllerModelDiscoveryTest extends TestCase
 
         $this->assertSame(429, $result['status']);
         $this->assertStringContainsString('Quota exceeded', $result['error']);
-        Http::assertSentCount(2);
+        Http::assertSentCount(1);
         Http::assertNotSent(fn (Request $request) => str_contains($request->url(), 'gemini-2.5-flash:generateContent'));
     }
 }

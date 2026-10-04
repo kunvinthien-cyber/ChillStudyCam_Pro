@@ -396,7 +396,7 @@ onMounted(() => {
             :class="msg.role === 'user'
               ? 'bg-amber-400 text-slate-950 rounded-2xl rounded-tr-sm font-medium shadow'
               : 'bg-slate-800/80 border border-slate-700/60 text-slate-200 rounded-2xl rounded-tl-sm relative'"
-            class="p-2.5 px-3 max-w-[85%] leading-relaxed font-khmer text-[11px]"
+            class="p-2.5 px-3 max-w-[85%] font-khmer leading-[2] tracking-wide text-[11px]"
           >
             <!-- 📸 បង្ហាញរូបភាពដែលបានផ្ញើក្នុង Chat Bubble -->
             <div v-if="msg.image" class="mb-2 rounded-xl overflow-hidden border border-black/20 max-w-[180px] shadow">
@@ -407,7 +407,7 @@ onMounted(() => {
               <i class="fa-solid fa-microphone text-[8px]"></i> Voice
             </span>
 
-            <div v-html="formatMarkdown(msg.text)"></div>
+            <div class="leading-[2]" v-html="formatMarkdown(msg.text)"></div>
 
             <button
               v-if="msg.role === 'model' && msg.id"
@@ -547,11 +547,11 @@ onMounted(() => {
                 <div v-if="msg.role === 'model'" class="w-8 h-8 rounded-xl bg-amber-400/20 text-amber-400 flex items-center justify-center shrink-0 text-sm">
                   <i class="fa-solid fa-robot"></i>
                 </div>
-                <div :class="msg.role === 'user' ? 'bg-amber-400 text-slate-950 rounded-3xl rounded-tr-sm font-medium shadow-lg' : 'bg-slate-900 border border-slate-800 text-slate-100 rounded-3xl rounded-tl-sm relative'" class="p-4 px-5 max-w-[80%] leading-relaxed font-khmer text-xs sm:text-sm">
+                <div :class="msg.role === 'user' ? 'bg-amber-400 text-slate-950 rounded-3xl rounded-tr-sm font-medium shadow-lg' : 'bg-slate-900 border border-slate-800 text-slate-100 rounded-3xl rounded-tl-sm relative'" class="p-4 px-5 max-w-[80%] font-khmer leading-[2.2] tracking-wide text-xs sm:text-sm">
                   <div v-if="msg.image" class="mb-2 rounded-2xl overflow-hidden border border-black/20 max-w-xs shadow">
                     <img :src="msg.image" alt="Homework" class="w-full h-auto object-cover" />
                   </div>
-                  <div v-html="formatMarkdown(msg.text)"></div>
+                  <div class="leading-[2.2]" v-html="formatMarkdown(msg.text)"></div>
                 </div>
               </div>
             </div>

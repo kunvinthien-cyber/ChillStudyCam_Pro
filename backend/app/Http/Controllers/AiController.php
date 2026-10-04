@@ -5,32 +5,15 @@ namespace App\Http\Controllers;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\User;
-use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class AiController extends Controller
 {
-    private function geminiRequest(int $timeout): PendingRequest
-    {
-        $request = Http::timeout($timeout)
-            ->connectTimeout(min($timeout, 10));
-        $caBundle = config('ai.ca_bundle');
-
-        if (! is_string($caBundle) || trim($caBundle) === '') {
-            return $request;
-        }
-
-        $caBundle = trim($caBundle);
-        if (! is_file($caBundle) || ! is_readable($caBundle)) {
-            throw new \RuntimeException('AI_CA_BUNDLE must point to a readable CA certificate bundle.');
-        }
-
-        return $request->withOptions(['verify' => $caBundle]);
-    }
-
+    /**
+     * ១. ទាញយកបញ្ជីប្រធានបទសន្ទនាទាំងអស់
+     */
     public function getConversations(Request $request)
     {
         $user = $request->user() ?? User::first();
@@ -44,6 +27,9 @@ class AiController extends Controller
         return response()->json($conversations);
     }
 
+    /**
+     * ២. ទាញយកសារទាំងអស់នៃកិច្ចសន្ទនាណាមួយមកឆាតបន្ត
+     */
     public function getConversationMessages(Request $request, $id)
     {
         $user = $request->user() ?? User::first();
@@ -53,7 +39,6 @@ class AiController extends Controller
             'id' => $m->id,
             'role' => $m->role,
             'text' => $m->message,
-            'image' => $m->image_data ?? null,
             'is_voice' => (bool)$m->is_voice,
             'is_starred' => (bool)$m->is_starred,
             'created_at' => $m->created_at->toIso8601String(),
@@ -65,6 +50,9 @@ class AiController extends Controller
         ]);
     }
 
+    /**
+     * ៣. លុបកិច្ចសន្ទនាណាមួយចោល
+     */
     public function deleteConversation(Request $request, $id)
     {
         $user = $request->user() ?? User::first();
@@ -72,10 +60,14 @@ class AiController extends Controller
         return response()->json(['message' => 'បានលុបការសន្ទនាជោគជ័យ']);
     }
 
+    /**
+     * ៤. ចុចផ្កាយចំណាំសារសំខាន់ៗ
+     */
     public function toggleStar(Request $request, $id)
     {
         $user = $request->user() ?? User::first();
         $message = AiMessage::where('user_id', $user->id)->findOrFail($id);
+
         $message->is_starred = !$message->is_starred;
         $message->save();
 
@@ -118,10 +110,13 @@ class AiController extends Controller
     }
 
     /**
-     * 🚀 សួរសំណួរ AI (គាំទ្រទាំង Text, Voice, និង Multimodal IMAGE 📸)
+     * ៥. សួរសំណួរ AI (Timeout ២០ វិនាទី & Groq Backup)
      */
     public function ask(Request $request)
-    { set_time_limit(120);
+    {
+        // បង្កើនពេលឱ្យ PHP រង់ចាំដល់ ១២០ វិនាទី
+        set_time_limit(120);
+
         try {
             $user = $request->user() ?? User::first();
             $geminiKey = trim(config('ai.supported_models.gemini.api_key') ?? env('GEMINI_API_KEY', ''));
@@ -130,15 +125,14 @@ class AiController extends Controller
             $messages = $request->input('messages', []);
             $conversationId = $request->input('conversation_id');
             $isVoiceMode = $request->boolean('voice_mode', false);
-            $attachedImage = $request->input('image'); // Base64 Image
 
-            if (empty($messages) && !$attachedImage) {
-                return response()->json(['reply' => '⚠️ សូមវាយបញ្ចូលសំណួរ ឬដាក់រូបភាពលំហាត់!']);
+            if (empty($messages)) {
+                return response()->json(['reply' => '⚠️ សូមវាយបញ្ចូលសំណួររបស់អ្នក!']);
             }
 
-            $lastUserText = end($messages)['text'] ?? ($attachedImage ? 'សូមជួយមើល និងដោះស្រាយលំហាត់ក្នុងរូបភាពនេះ' : '');
+            $lastUserText = end($messages)['text'] ?? '';
 
-            // បង្កើត Conversation ថ្មី
+            // បង្កើត Conversation ថ្មីបើមិនទាន់មាន
             $conversation = null;
             if ($user) {
                 if ($conversationId) {
@@ -149,19 +143,18 @@ class AiController extends Controller
                     $title = mb_substr(trim($lastUserText), 0, 40, 'UTF-8');
                     $conversation = AiConversation::create([
                         'user_id' => $user->id,
-                        'title' => $title ?: ($attachedImage ? '📷 លំហាត់រូបភាព' : 'ការសន្ទនាថ្មី'),
+                        'title' => $title ?: 'ការសន្ទនាថ្មី',
                     ]);
                 }
             }
 
             // System Instruction
             if ($isVoiceMode) {
-                $systemInstruction = "You are 'ChillAI' in a LIVE VOICE PHONE CALL. Keep your answer EXTREMELY SHORT (1-2 sentences only). Speak naturally in spoken Khmer or English. No markdown, no emojis.";
+                $systemInstruction = "You are 'ChillAI' in a LIVE VOICE PHONE CALL. Keep your answer EXTREMELY SHORT (1-2 sentences only). Speak naturally in polite spoken Khmer or English. No markdown, no bullet points.";
             } else {
-                $systemInstruction = "You are 'ChillAI Tutor', the coolest, funniest, and most supportive study buddy for Cambodian students on ChillStudy.
-                You are MULTIMODAL: You can analyze images of homework, math equations, chemistry formulas, and handwritten notes.
-                When shown an image of a math problem or homework, solve it step-by-step clearly in fluent Khmer.
-                Format your answers cleanly using bullet points, bold text, and code/math blocks. Be encouraging and friendly ✨.";
+                $systemInstruction = "You are 'ChillAI Tutor', an intelligent, respectful, and highly competent academic study mentor for Cambodian students.
+                Write in grammatically correct, natural, standard Cambodian Khmer.
+                Format your answers cleanly using bullet points, bold text, and line breaks. Break down explanations into clear steps.";
             }
 
             $recentMessages = array_slice($messages, -5);
@@ -170,10 +163,10 @@ class AiController extends Controller
             $groqError = '';
 
             // ==============================================
-            // 📸 ជំហានទី ១៖ ហៅ Google Gemini (ពូកែខាងមើលរូបភាព Vision) env('GROQ_API_KEY', '')
+            // 🚀 ជំហានទី ១៖ ហៅ Google Gemini (Timeout ២០ វិនាទី)
             // ==============================================
             if ($geminiKey && $geminiKey !== 'ដាក់_API_KEY_របស់អ្នកត្រង់នេះ') {
-                $geminiRes = $this->callGeminiWithLog($recentMessages, $geminiKey, $systemInstruction, $isVoiceMode, $attachedImage);
+                $geminiRes = $this->callGeminiWithLog($recentMessages, $geminiKey, $systemInstruction, $isVoiceMode);
                 $replyText = $geminiRes['reply'];
                 $geminiError = $geminiRes['error'];
             } else {
@@ -181,24 +174,28 @@ class AiController extends Controller
             }
 
             // ==============================================
-            // 🛡️ ជំហានទី ២៖ បើគ្មានរូបភាព ហើយ Gemini រវល់ -> ហៅ Groq Llama 3
+            // 🛡️ ជំហានទី ២៖ បើ Gemini បរាជ័យ -> រត់ទៅ Groq ភ្លាម
             // ==============================================
-            if (!$replyText && !$attachedImage && $groqKey) {
-                $groqRes = $this->callGroqWithLog($recentMessages, $groqKey, $systemInstruction, $isVoiceMode);
-                $replyText = $groqRes['reply'];
-                $groqError = $groqRes['error'];
+            if (!$replyText) {
+                if ($groqKey) {
+                    $groqRes = $this->callGroqWithLog($recentMessages, $groqKey, $systemInstruction, $isVoiceMode);
+                    $replyText = $groqRes['reply'];
+                    $groqError = $groqRes['error'];
+                } else {
+                    $groqError = 'មិនទាន់ឃើញ GROQ_API_KEY ក្នុង .env';
+                }
             }
 
             if (!$replyText) {
                 return response()->json([
-                    'reply' => "⚠️ មិនអាចទាញយកចម្លើយបានទេ:\n• Gemini: {$geminiError}" . ($groqError ? "\n• Groq: {$groqError}" : "")
+                    'reply' => "⚠️ មិនអាចទាញយកចម្លើយបានទេ:\n• Gemini: {$geminiError}\n• Groq: {$groqError}"
                 ]);
             }
 
             // 💾 រក្សាទុកក្នុង Database
             $savedModelMsg = null;
             try {
-                if ($user && $conversation) {
+                if ($user && $lastUserText && $conversation) {
                     AiMessage::create([
                         'conversation_id' => $conversation->id,
                         'user_id' => $user->id,
@@ -235,172 +232,57 @@ class AiController extends Controller
     }
 
     /**
-     * 🤖 Method ហៅ Google Gemini (គាំទ្រ MULTIMODAL VISION BASE64)
+     * 🤖 Method ហៅ Google Gemini (Timeout ២០ វិនាទី កុំឱ្យ cURL កាត់ផ្តាច់)
      */
-    private function callGeminiWithLog($messages, $apiKey, $systemInstruction, $isVoiceMode, $attachedImage = null)
+    private function callGeminiWithLog($messages, $apiKey, $systemInstruction, $isVoiceMode)
     {
         $geminiContents = [];
         $hasUserStarted = false;
 
-        foreach ($messages as $index => $msg) {
+        foreach ($messages as $msg) {
             $role = ($msg['role'] === 'user') ? 'user' : 'model';
             if (!$hasUserStarted && $role !== 'user') continue;
             $hasUserStarted = true;
             $text = $msg['text'] ?? '';
-
             if (count($geminiContents) === 0) {
                 $text = "[Instruction: {$systemInstruction}]\n\n" . $text;
             }
-
-            $parts = [['text' => (string)$text]];
-
-            // 📸 បញ្ចូលរូបភាព Base64 ទៅក្នុងសារចុងក្រោយរបស់ User
-            if ($attachedImage && $role === 'user' && $index === count($messages) - 1) {
-                if (preg_match('/^data:(image\/[a-zA-Z0-9\+\-\.]+);base64,(.+)$/', $attachedImage, $m)) {
-                    $mimeType = $m[1];
-                    $base64Data = $m[2];
-                } else {
-                    $mimeType = 'image/jpeg';
-                    $base64Data = $attachedImage;
-                }
-
-                $parts[] = [
-                    'inline_data' => [
-                        'mime_type' => $mimeType,
-                        'data' => $base64Data
-                    ]
-                ];
-            }
-
-            $geminiContents[] = ['role' => $role, 'parts' => $parts];
-        }
-
-        // បើសារទទេ តែមានរូបភាព
-        if (empty($geminiContents) && $attachedImage) {
-            if (preg_match('/^data:(image\/[a-zA-Z0-9\+\-\.]+);base64,(.+)$/', $attachedImage, $m)) {
-                $mimeType = $m[1];
-                $base64Data = $m[2];
-            } else {
-                $mimeType = 'image/jpeg';
-                $base64Data = $attachedImage;
-            }
-
-            $geminiContents[] = [
-                'role' => 'user',
-                'parts' => [
-                    ['text' => "[Instruction: {$systemInstruction}]\n\nសូមជួយមើល និងដោះស្រាយលំហាត់ក្នុងរូបភាពនេះមួយ"],
-                    ['inline_data' => ['mime_type' => $mimeType, 'data' => $base64Data]]
-                ]
-            ];
+            $geminiContents[] = ['role' => $role, 'parts' => [['text' => (string)$text]]];
         }
 
         if (empty($geminiContents)) return ['reply' => '', 'error' => 'No contents'];
 
-        return $this->fetchReplyText($apiKey, $geminiContents, $isVoiceMode ? 70 : 450);
-    }
+        // ម៉ូដែលផ្លូវការរបស់ Google Gemini
+        $models = ['models/gemini-2.0-flash', 'models/gemini-1.5-flash'];
+        $lastErr = '';
 
-    protected function fetchReplyText(string $apiKey, array $contents, int $maxOutputTokens = 450): array
-    {
-        $configuredEndpoint = config('ai.supported_models.gemini.api_endpoint');
-        if (!is_string($configuredEndpoint)
-            || !preg_match('#^(https://[^/]+/.*/models/)([^/:]+):generateContent$#', $configuredEndpoint, $endpointMatch)) {
-            return ['reply' => '', 'error' => 'Invalid Gemini API endpoint configuration.', 'status' => null];
-        }
-
-        $configuredModel = $endpointMatch[2];
-        $modelNames = $this->discoverGeminiModels($apiKey);
-        $models = array_values(array_unique([
-            $configuredModel,
-            ...$modelNames,
-            'gemini-2.0-flash',
-        ]));
-        $lastError = 'No available Gemini models support generateContent.';
-        $lastStatus = null;
-
-        foreach ($models as $model) {
+        foreach ($models as $m) {
             try {
-                $response = $this->geminiRequest(25)
-                    ->withHeaders(['x-goog-api-key' => $apiKey])
-                    ->post($endpointMatch[1] . $model . ':generateContent', [
-                        'contents' => $contents,
+                $res = Http::withoutVerifying()
+                    ->timeout(20) // 👈 ទុកពេល ២០ វិនាទី កុំឱ្យ cURL កាត់ផ្តាច់
+                    ->withHeaders(['Content-Type' => 'application/json'])
+                    ->post("https://generativelanguage.googleapis.com/v1beta/{$m}:generateContent?key={$apiKey}", [
+                        'contents' => $geminiContents,
                         'generationConfig' => [
-                            'maxOutputTokens' => $maxOutputTokens,
-                            'temperature' => 0.7,
-                        ],
+                            'maxOutputTokens' => $isVoiceMode ? 250 : 800,
+                            'temperature' => 0.7
+                        ]
                     ]);
 
-                if ($response->status() === 429) {
-                    return [
-                        'reply' => '',
-                        'error' => $response->json('error.message', 'Gemini rate limit exceeded.'),
-                        'status' => 429,
-                    ];
+                if ($res->successful()) {
+                    return ['reply' => $res->json('candidates.0.content.parts.0.text', ''), 'error' => ''];
                 }
-
-                if (!$response->successful()) {
-                    $lastStatus = $response->status();
-                    $lastError = $response->json('error.message', 'Unknown Gemini API error.');
-                    continue;
-                }
-
-                $reply = collect($response->json('candidates.0.content.parts', []))
-                    ->pluck('text')
-                    ->filter(fn ($text) => is_string($text) && trim($text) !== '')
-                    ->implode('');
-
-                if (trim($reply) !== '') {
-                    return ['reply' => $reply, 'error' => null, 'status' => null];
-                }
-
-                $lastStatus = $response->status();
-                $lastError = 'Gemini returned a successful response without reply text.';
-            } catch (\Throwable $e) {
-                $lastError = $e->getMessage();
+                $lastErr = "Status {$res->status()}: " . $res->json('error.message', 'Unknown');
+            } catch (\Exception $e) {
+                $lastErr = $e->getMessage();
             }
         }
-
-        return [
-            'reply' => '',
-            'error' => $lastStatus ? "Status {$lastStatus}: {$lastError}" : $lastError,
-            'status' => $lastStatus,
-        ];
+        return ['reply' => '', 'error' => $lastErr];
     }
 
-    private function discoverGeminiModels(string $apiKey): array
-    {
-        $cacheKey = 'ai.gemini.models.' . hash('sha256', $apiKey);
-        $cachedModels = Cache::get($cacheKey);
-        if (is_array($cachedModels)) {
-            return $cachedModels;
-        }
-
-        try {
-            $response = $this->geminiRequest(10)
-                ->withHeaders(['x-goog-api-key' => $apiKey])
-                ->get('https://generativelanguage.googleapis.com/v1beta/models');
-
-            if (!$response->successful()) {
-                return [];
-            }
-
-            $models = collect($response->json('models', []))
-                ->filter(fn ($model) => in_array('generateContent', $model['supportedGenerationMethods'] ?? [], true))
-                ->pluck('name')
-                ->map(fn ($name) => preg_replace('#^models/#', '', (string) $name))
-                ->filter(fn ($name) => str_contains($name, 'flash') && !str_contains($name, 'tts'))
-                ->values()
-                ->all();
-
-            Cache::put($cacheKey, $models, now()->addMinutes(30));
-
-            return $models;
-        } catch (\Throwable $e) {
-            Log::warning('Gemini model discovery failed: ' . $e->getMessage());
-
-            return [];
-        }
-    }
-
+    /**
+     * ⚡ Method ហៅ Groq Cloud (ម៉ូដែល openai/gpt-oss-20b)
+     */
     private function callGroqWithLog($messages, $apiKey, $systemInstruction, $isVoiceMode)
     {
         try {
@@ -410,13 +292,13 @@ class AiController extends Controller
                 $groqMessages[] = ['role' => $role, 'content' => $msg['text'] ?? ''];
             }
 
-           $res = Http::withoutVerifying()->timeout(7)->withHeaders([
+            $res = Http::withoutVerifying()->timeout(10)->withHeaders([
                 'Authorization' => "Bearer {$apiKey}",
                 'Content-Type' => 'application/json',
             ])->post('https://api.groq.com/openai/v1/chat/completions', [
-                'model' => 'llama-3.1-8b-instant', // 👈 ម៉ូដែល Free ផ្លូវការរបស់ Groq (១៤,៤០០ ដង/ថ្ងៃ)
+                'model' => 'openai/gpt-oss-20b', // 👈 ម៉ូដែល Free ផ្លូវការរបស់ Groq
                 'messages' => $groqMessages,
-                'max_tokens' => $isVoiceMode ? 80 : 400,
+                'max_tokens' => $isVoiceMode ? 250 : 800,
                 'temperature' => 0.7,
             ]);
 
@@ -429,12 +311,20 @@ class AiController extends Controller
         }
     }
 
+    /**
+     * 🔊 ៦. Google Khmer TTS
+     */
     public function tts(Request $request)
     {
         $text = $request->query('text', '');
         if (!$text) return response()->json(['error' => 'No text'], 400);
 
-        $cleanText = mb_substr(trim($text), 0, 90, 'UTF-8');
+        $cleanText = mb_substr(trim($text), 0, 180, 'UTF-8');
+        $lastPeriod = mb_strrpos($cleanText, '។', 0, 'UTF-8');
+        if ($lastPeriod !== false && $lastPeriod > 40) {
+            $cleanText = mb_substr($cleanText, 0, $lastPeriod + 1, 'UTF-8');
+        }
+
         $encodedText = rawurlencode($cleanText);
 
         try {
