@@ -10,7 +10,7 @@ if (! is_string($mysqlSslCa) || $mysqlSslCa === '' || ! is_file($mysqlSslCa)) {
 }
 
 $mysqlOptions = extension_loaded('pdo_mysql')
-    ? [PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => false]
+    ? [PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => env('MYSQL_ATTR_SSL_VERIFY_SERVER_CERT', false)]
     : [];
 if ($mysqlOptions !== [] && $mysqlSslCa !== null) {
     $mysqlOptions[PDO::MYSQL_ATTR_SSL_CA] = $mysqlSslCa;
@@ -91,6 +91,7 @@ return [
             'strict' => true,
             'engine' => null,
             'options' => extension_loaded('pdo_mysql') ? array_filter([
+                PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => env('MYSQL_ATTR_SSL_VERIFY_SERVER_CERT', false),
                 PDO::MYSQL_ATTR_SSL_CA => file_exists('/etc/ssl/certs/ca-certificates.crt')
                     ? '/etc/ssl/certs/ca-certificates.crt'
                     : base_path('cacert.pem'),
