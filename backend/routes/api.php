@@ -63,3 +63,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/ai/history', [AiController::class, 'getHistory']);
     Route::delete('/ai/history', [AiController::class, 'clearHistory']);
 });
+Route::get('/setup-database-chillstudy', function () {
+    \Illuminate\Support\Facades\Artisan::call('migrate:fresh --seed --force');
+    return 'Database Migrated & Seeded Successfully! 🎉';
+});
