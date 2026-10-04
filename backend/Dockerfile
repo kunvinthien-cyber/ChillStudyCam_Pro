@@ -1,8 +1,8 @@
-FROM php:8.2-cli-alpine
+FROM php:8.3-cli-alpine
 
 WORKDIR /app
 
-# ដំឡើង System packages និង Extensions ចាំបាច់សម្រាប់ Laravel 11
+# ដំឡើង System packages និង Extensions ចាំបាច់សម្រាប់ Laravel 11 (PHP 8.3)
 RUN apk add --no-cache \
     curl \
     git \
@@ -22,10 +22,10 @@ ENV COMPOSER_ALLOW_SUPERUSER=1
 # Copy កូដទាំងអស់ចូល
 COPY . /app
 
-# ដំឡើង dependencies ដោយសុវត្ថិភាព
+# ដំឡើង dependencies
 RUN composer install --ignore-platform-reqs --no-dev --optimize-autoloader --no-interaction --no-scripts
 
 EXPOSE 8000
 
-# ដំណើរការ Laravel 11 លើ Port របស់ Render
+# ដំណើរការ Laravel
 CMD php artisan package:discover --ansi && php artisan serve --host=0.0.0.0 --port=${PORT:-8000}
