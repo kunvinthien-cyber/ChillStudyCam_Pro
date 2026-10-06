@@ -47,6 +47,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/user/profile', [UserController::class, 'update']);
     Route::get('/user/orders', [UserController::class, 'orders']);
     Route::post('/study/complete', [StudySessionController::class, 'complete']);
+    Route::post('/study/start', [StudySessionController::class, 'start']);
     Route::post('/orders', [ShopController::class, 'createOrder']);
     Route::post('/documents/{document}/download', [DocumentController::class, 'download']);
 
@@ -63,6 +64,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/ai/history', [AiController::class, 'getHistory']);
     Route::delete('/ai/history', [AiController::class, 'clearHistory']);
     Route::post('/rooms/{room}/enter', [RoomController::class, 'enterRoom']);
+    Route::post('/rooms/{room}/leave', [RoomController::class, 'leaveRoom']);
 });
 Route::get('/setup-database-chillstudy', function () {
     \Illuminate\Support\Facades\Artisan::call('migrate:fresh --seed --force');

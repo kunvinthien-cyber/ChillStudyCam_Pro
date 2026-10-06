@@ -9,16 +9,51 @@ use App\Models\RoomParticipant;
 use App\Models\RoomReaction;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
 
 class RoomController extends Controller
 {
+    private function matchesRoomPasscode(string $input, string $stored): bool
+    {
+        if ($stored === '') return false;
+        if (str_starts_with($stored, '$2y$') || str_starts_with($stored, '$argon2')) {
+            return Hash::check($input, $stored);
+        }
+
+        return hash_equals($stored, $input);
+    }
+
+    private function roomAccessError(Request $request, $roomId)
+    {
+        $room = Room::findOrFail($roomId);
+        if (! $room->is_private || ($room->access_mode ?? 'pin') === 'public') return null;
+
+        $user = $request->user();
+        if (! $user) return response()->json(['message' => 'Unauthenticated.'], 401);
+        if ((int) $room->creator_id === (int) $user->id || (int) $user->id === 1) return null;
+
+        $hasApprovedParticipant = RoomParticipant::where('room_id', $room->id)
+            ->where('user_id', $user->id)
+            ->where('study_goal', '!=', 'pending_approval')
+            ->exists();
+        $hasAcceptedInvite = RoomInvite::where('room_id', $room->id)
+            ->where('invitee_id', $user->id)
+            ->where('status', 'accepted')
+            ->exists();
+
+        if ($hasApprovedParticipant || $hasAcceptedInvite) return null;
+
+        return response()->json(['message' => 'PIN verification or room approval is required.'], 403);
+    }
+
     public function index()
     {
         return response()->json(Room::latest()->get());
     }
 
-    public function show(Room $room)
+    public function show(Request $request, Room $room)
     {
+        if ($denied = $this->roomAccessError($request, $room->id)) return $denied;
         return response()->json($room);
     }
 
@@ -30,6 +65,7 @@ class RoomController extends Controller
             'category_tag' => 'required|string',
             'grade_level' => 'required|string',
             'is_private' => 'nullable|boolean',
+            'access_mode' => ['nullable', 'in:public,pin,approval'],
             'passcode' => ['nullable', 'string', 'min:4', 'max:6'],
         ]);
 
@@ -38,9 +74,10 @@ class RoomController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
-        $isPrivate = (bool) $request->boolean('is_private');
-        if ($isPrivate && blank($request->passcode)) {
-            return response()->json(['message' => 'Private rooms require a passcode.'], 422);
+        $accessMode = $validated['access_mode'] ?? ($request->boolean('is_private') ? 'pin' : 'public');
+        $isPrivate = $accessMode !== 'public';
+        if ($accessMode === 'pin' && blank($request->passcode)) {
+            return response()->json(['message' => 'PIN rooms require a passcode.'], 422);
         }
 
         $room = Room::create([
@@ -56,7 +93,8 @@ class RoomController extends Controller
             'grade_level' => $validated['grade_level'] ?: 'all',
             'subject_focus' => $request->subject_focus ?: 'ទូទៅ',
             'is_private' => $isPrivate,
-            'passcode' => $isPrivate ? (string) $request->passcode : null,
+            'access_mode' => $accessMode,
+            'passcode' => $accessMode === 'pin' ? Hash::make((string) $request->passcode) : null,
         ]);
 
         return response()->json($room, 201);
@@ -64,22 +102,38 @@ class RoomController extends Controller
 
     public function verifyPasscode(Request $request, $roomId)
     {
-        $room = Room::findOrFail($roomId);
+        $request->validate(['passcode' => ['required', 'string', 'max:6']]);
+        $user = $request->user();
+        if (! $user) return response()->json(['message' => 'Unauthenticated.'], 401);
 
-        if (! $room->is_private) {
-            return response()->json(['valid' => true]);
+        $room = Room::findOrFail($roomId);
+        if (! $room->is_private) return response()->json(['valid' => true]);
+        if (($room->access_mode ?? 'pin') !== 'pin') {
+            return response()->json(['valid' => false, 'message' => 'This room uses admin approval.'], 422);
         }
 
-        return response()->json([
-            'valid' => $room->passcode !== null && $room->passcode === (string) $request->input('passcode'),
-            'message' => $room->passcode !== null && $room->passcode === (string) $request->input('passcode')
-                ? 'PIN accepted.'
-                : 'លេខកូដសម្ងាត់ PIN មិនត្រឹមត្រូវឡើយ!',
-        ], $room->passcode !== null && $room->passcode === (string) $request->input('passcode') ? 200 : 403);
+        $passcode = (string) $request->input('passcode');
+        $storedPasscode = (string) $room->passcode;
+        if (! $this->matchesRoomPasscode($passcode, $storedPasscode)) {
+            return response()->json(['valid' => false, 'message' => 'Invalid room PIN.'], 403);
+        }
+
+        if (! str_starts_with($storedPasscode, '$2y$') && ! str_starts_with($storedPasscode, '$argon2')) {
+            $room->passcode = Hash::make($passcode);
+            $room->save();
+        }
+
+        RoomParticipant::updateOrCreate(
+            ['room_id' => $room->id, 'user_id' => $user->id],
+            ['user_name' => $user->name, 'last_seen_at' => now(), 'study_goal' => null]
+        );
+
+        return response()->json(['valid' => true]);
     }
 
-    public function getMessages($roomId)
+    public function getMessages(Request $request, $roomId)
     {
+        if ($denied = $this->roomAccessError($request, $roomId)) return $denied;
         $messages = RoomMessage::where('room_id', $roomId)
             ->latest()
             ->take(25)
@@ -92,6 +146,7 @@ class RoomController extends Controller
 
     public function sendMessage(Request $request, $roomId)
     {
+        if ($denied = $this->roomAccessError($request, $roomId)) return $denied;
         $request->validate(['message' => 'required|string|max:500']);
 
         $user = $request->user();
@@ -109,6 +164,7 @@ class RoomController extends Controller
 
     public function sendReaction(Request $request, $roomId)
     {
+        if ($denied = $this->roomAccessError($request, $roomId)) return $denied;
         $request->validate(['emoji' => 'required|string|max:32']);
 
         $user = $request->user();
@@ -122,8 +178,9 @@ class RoomController extends Controller
         return response()->json($reaction, 201);
     }
 
-    public function getRecentReactions($roomId)
+    public function getRecentReactions(Request $request, $roomId)
     {
+        if ($denied = $this->roomAccessError($request, $roomId)) return $denied;
         $reactions = RoomReaction::where('room_id', $roomId)
             ->where('created_at', '>=', now()->subSeconds(5))
             ->latest()
@@ -132,8 +189,9 @@ class RoomController extends Controller
         return response()->json($reactions);
     }
 
-    public function getParticipants($roomId)
+    public function getParticipants(Request $request, $roomId)
     {
+        if ($denied = $this->roomAccessError($request, $roomId)) return $denied;
         RoomParticipant::where('room_id', $roomId)
             ->where('last_seen_at', '<', now()->subSeconds(30))
             ->delete();
@@ -152,6 +210,7 @@ class RoomController extends Controller
 
     public function joinVoice(Request $request, $roomId)
     {
+        if ($denied = $this->roomAccessError($request, $roomId)) return $denied;
         $request->validate(['peer_id' => 'required|string']);
 
         $user = $request->user();
@@ -177,6 +236,7 @@ class RoomController extends Controller
 
     public function leaveVoice(Request $request, $roomId)
     {
+        if ($denied = $this->roomAccessError($request, $roomId)) return $denied;
         if ($request->filled('peer_id')) {
             RoomParticipant::where('room_id', $roomId)
                 ->where('peer_id', $request->peer_id)
@@ -188,6 +248,7 @@ class RoomController extends Controller
 
     public function updateGoal(Request $request, $roomId)
     {
+        if ($denied = $this->roomAccessError($request, $roomId)) return $denied;
         $request->validate(['peer_id' => 'required|string', 'goal' => 'required|string']);
 
         RoomParticipant::where('room_id', $roomId)
@@ -211,6 +272,7 @@ class RoomController extends Controller
 
     public function sendInvite(Request $request, $roomId)
     {
+        if ($denied = $this->roomAccessError($request, $roomId)) return $denied;
         $user = $request->user();
         if (! $user) {
             return response()->json(['message' => 'Unauthenticated.'], 401);
@@ -248,8 +310,23 @@ class RoomController extends Controller
 
     public function respondInvite(Request $request, $inviteId)
     {
-        $invite = RoomInvite::findOrFail($inviteId);
-        $invite->update(['status' => $request->boolean('accept') || $request->input('action') === 'accept' ? 'accepted' : 'rejected']);
+        $request->validate(['action' => ['required', 'in:accept,reject']]);
+        $invite = RoomInvite::where('invitee_id', $request->user()->id)
+            ->where('status', 'pending')
+            ->findOrFail($inviteId);
+        $invite->update(['status' => $request->input('action') === 'accept' ? 'accepted' : 'rejected']);
+
+        if ($invite->status === 'accepted') {
+            $user = $request->user();
+            $participant = RoomParticipant::firstOrNew(['room_id' => $invite->room_id, 'user_id' => $user->id]);
+            $participant->fill([
+                'user_name' => $user->name,
+                'study_goal' => $participant->study_goal === 'pending_approval'
+                    ? 'រៀនផ្ដោតអារម្មណ៍ ២៥ នាទី'
+                    : ($participant->study_goal ?: 'រៀនផ្ដោតអារម្មណ៍ ២៥ នាទី'),
+                'last_seen_at' => now(),
+            ])->save();
+        }
 
         return response()->json(['status' => $invite->status, 'room_id' => $invite->room_id]);
     }
@@ -261,12 +338,25 @@ class RoomController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
-        RoomParticipant::updateOrCreate(
-            ['room_id' => $roomId, 'user_id' => $user->id],
-            ['user_name' => $user->name, 'study_goal' => 'pending_approval', 'is_in_voice' => false, 'last_seen_at' => now()]
-        );
+        $room = Room::findOrFail($roomId);
+        if (($room->access_mode ?? 'pin') !== 'approval') {
+            return response()->json(['message' => 'This room does not require approval.'], 422);
+        }
 
-        return response()->json(['message' => 'សំណើត្រូវបានផ្ញើ!']);
+        $participant = RoomParticipant::firstOrNew(['room_id' => $roomId, 'user_id' => $user->id]);
+        $participant->user_name = $user->name;
+        if (! $participant->exists || $participant->study_goal === 'pending_approval') {
+            $participant->study_goal = 'pending_approval';
+            $participant->is_in_voice = false;
+        }
+        $participant->last_seen_at = now();
+        $participant->save();
+
+        return response()->json([
+            'requested' => $participant->study_goal === 'pending_approval',
+            'approved' => $participant->study_goal !== 'pending_approval',
+            'message' => 'សំណើត្រូវបានផ្ញើ!',
+        ]);
     }
 
     public function checkJoinStatus(Request $request, $roomId)
@@ -276,11 +366,21 @@ class RoomController extends Controller
             ->where('user_id', $user?->id ?? 0)
             ->first();
 
-        return response()->json(['approved' => (bool) ($participant && $participant->study_goal !== 'pending_approval')]);
+        return response()->json([
+            'requested' => (bool) $participant,
+            'approved' => (bool) ($participant && $participant->study_goal !== 'pending_approval'),
+        ]);
     }
 
     public function approveMember(Request $request, $roomId, $participantId)
     {
+        $room = Room::findOrFail($roomId);
+        $user = $request->user();
+        if (! $user || ((int) $room->creator_id !== (int) $user->id && (int) $user->id !== 1)) {
+            return response()->json(['message' => 'Only the room admin can approve members.'], 403);
+        }
+
+        $request->validate(['action' => ['required', 'in:approve,reject']]);
         $participant = RoomParticipant::where('room_id', $roomId)->find($participantId);
 
         if (! $participant) {
@@ -288,7 +388,7 @@ class RoomController extends Controller
         }
 
         if ($request->input('action') === 'approve') {
-            $participant->update(['study_goal' => 'បានចូលរៀនផ្លូវការ']);
+            $participant->update(['study_goal' => 'រៀនផ្ដោតអារម្មណ៍ ២៥ នាទី']);
             return response()->json(['message' => 'បានអនុញ្ញាត!']);
         }
 
@@ -299,21 +399,34 @@ class RoomController extends Controller
     // 🚪 កត់ត្រាវត្តមានសិស្សភ្លាមៗពេលទើបចូលបន្ទប់
     public function enterRoom(Request $request, $roomId)
     {
-        $user = $request->user() ?? User::first();
-        $userName = $user ? $user->name : 'សិស្ស Chill ' . rand(10, 99);
+        if ($denied = $this->roomAccessError($request, $roomId)) return $denied;
+        $user = $request->user();
+        if (! $user) return response()->json(['message' => 'Unauthenticated.'], 401);
+        $userName = $user->name;
 
         $participant = RoomParticipant::firstOrNew([
             'room_id' => $roomId,
-            'user_id' => $user ? $user->id : null,
+            'user_id' => $user->id,
         ]);
 
         $participant->fill([
             'user_name' => $userName,
             'peer_id' => $request->input('peer_id') ?: $participant->peer_id,
             'study_goal' => $participant->study_goal ?: 'រៀនផ្ដោតអារម្មណ៍ ២៥ នាទី',
+            'is_in_voice' => $participant->is_in_voice ?? false,
             'last_seen_at' => now(),
         ])->save();
 
         return response()->json($participant);
+    }
+
+    public function leaveRoom(Request $request, $roomId)
+    {
+        if ($denied = $this->roomAccessError($request, $roomId)) return $denied;
+        RoomParticipant::where('room_id', $roomId)
+            ->where('user_id', $request->user()->id)
+            ->delete();
+
+        return response()->json(['message' => 'Left room.']);
     }
 }

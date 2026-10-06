@@ -12,7 +12,7 @@ let pollTimer = null
 const checkInvites = async () => {
   // បើមិនទាន់ Login ទេ មិនបាច់សួរ Server ឡើយ
   const token = localStorage.getItem('auth_token')
-  if (!token) return
+  if (!token || isResponding.value) return
 
   try {
     const res = await apiClient.get('/my-invites')

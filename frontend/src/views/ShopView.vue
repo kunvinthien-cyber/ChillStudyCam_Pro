@@ -5,6 +5,8 @@ import { useUser } from '../composables/useUser'
 import BakongKhqrModal from '../components/BakongKhqrModal.vue'
 
 const showBakongModal = ref(false)
+const isSubmittingOrder = ref(false)
+const activeOrderId = ref(null)
 const { user } = useUser()
 
 const products = ref([])
@@ -28,11 +30,15 @@ const fetchProducts = async () => {
 }
 
 const deliveryFee = computed(() => fulfillmentType.value === 'delivery' ? 0.80 : 0.00)
+const canUsePts = computed(() => Boolean(
+  selectedProduct.value && user.value.coins >= Number(selectedProduct.value.pts_price),
+))
+const ptsApplied = computed(() => usePts.value && canUsePts.value)
 
 const finalPrice = computed(() => {
   if (!selectedProduct.value) return 0
   let total = Number(selectedProduct.value.price)
-  if (usePts.value && user.value.coins >= selectedProduct.value.pts_price) {
+  if (ptsApplied.value) {
     total -= Number(selectedProduct.value.pts_discount)
   }
   total += deliveryFee.value
@@ -42,15 +48,32 @@ const finalPrice = computed(() => {
 const openCheckout = (product) => {
   selectedProduct.value = product
   fulfillmentType.value = 'pickup'
+  activeOrderId.value = null
 }
 
-const confirmOrder = () => {
+const confirmOrder = async () => {
+  if (!selectedProduct.value || isSubmittingOrder.value) return
   if (fulfillmentType.value === 'delivery' && (!deliveryAddress.value || !phoneNumber.value)) {
     alert('សូមបំពេញអាសយដ្ឋាន និងលេខទូរស័ព្ទ!')
     return
   }
-  // This preview is not connected to Bakong and must not create a paid order.
-  showBakongModal.value = true
+  isSubmittingOrder.value = true
+  try {
+    const response = await apiClient.post('/orders', {
+      product_id: selectedProduct.value.id,
+      fulfillment_type: fulfillmentType.value,
+      delivery_address: fulfillmentType.value === 'delivery' ? deliveryAddress.value : null,
+      phone_number: fulfillmentType.value === 'delivery' ? phoneNumber.value : null,
+      pts_used: ptsApplied.value ? Number(selectedProduct.value.pts_price) : 0,
+    })
+    user.value.coins = response.data.remaining_coins
+    activeOrderId.value = response.data.order.id
+    showBakongModal.value = true
+  } catch (error) {
+    alert(error.response?.data?.message || 'Could not create your order.')
+  } finally {
+    isSubmittingOrder.value = false
+  }
 }
 
 onMounted(() => {
@@ -246,9 +269,9 @@ const getShopLocation = (partnerShop) => {
         <!-- Use PTS -->
         <div class="flex items-center justify-between p-3 rounded-2xl bg-slate-950 border border-slate-800 mb-4 text-xs">
           <div class="flex items-center gap-2">
-            <input type="checkbox" v-model="usePts" id="ptsToggle" class="accent-amber-400 w-4 h-4 cursor-pointer" />
-            <label for="ptsToggle" class="text-slate-300 cursor-pointer font-khmer">
-              ប្រើ {{ selectedProduct.pts_price }} PTS (បញ្ចុះ -${{ Number(selectedProduct.pts_discount).toFixed(2) }})
+            <input type="checkbox" v-model="usePts" id="ptsToggle" :disabled="!canUsePts" class="accent-amber-400 w-4 h-4 cursor-pointer disabled:opacity-40" />
+              <label for="ptsToggle" class="text-slate-300 cursor-pointer font-khmer">
+              {{ canUsePts ? `ប្រើ ${selectedProduct.pts_price} PTS (បញ្ចុះ -$${Number(selectedProduct.pts_discount).toFixed(2)})` : `ត្រូវការ ${selectedProduct.pts_price} PTS ដើម្បីទទួលបានការបញ្ចុះតម្លៃ` }}
             </label>
           </div>
           <span class="text-amber-400 font-bold">🪙 សល់ {{ user.coins }}</span>
@@ -260,7 +283,7 @@ const getShopLocation = (partnerShop) => {
             <span>តម្លៃដើម៖</span>
             <span class="text-white">${{ Number(selectedProduct.price).toFixed(2) }}</span>
           </div>
-          <div v-if="usePts" class="flex justify-between text-emerald-400">
+          <div v-if="ptsApplied" class="flex justify-between text-emerald-400">
             <span>បញ្ចុះតម្លៃ PTS៖</span>
             <span>-${{ Number(selectedProduct.pts_discount).toFixed(2) }}</span>
           </div>
@@ -276,13 +299,14 @@ const getShopLocation = (partnerShop) => {
 
         <button
           @click="confirmOrder"
+          :disabled="isSubmittingOrder"
           class="w-full py-3 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs transition shadow-lg flex items-center justify-center gap-2"
         >
           <i class="fa-solid fa-circle-info"></i>
-          <span>មើល KHQR Demo (${{ finalPrice }})</span>
+          <span>{{ isSubmittingOrder ? 'កំពុងបង្កើតការកម្មង់...' : `មើល KHQR Demo ($${finalPrice})` }}</span>
         </button>
         <p class="text-[10px] text-amber-300 text-center mt-2">
-          Demo ប៉ុណ្ណោះ៖ មិនអាចទូទាត់ ឬកត់ត្រា Order ពិតបានទេ។
+          Demo only: creates a pending order and deducts selected PTS. No cash payment is processed.
         </p>
       </div>
     </div>
@@ -292,6 +316,7 @@ const getShopLocation = (partnerShop) => {
   :amount="finalPrice"
   :product-name="selectedProduct?.name"
   :order-type="fulfillmentType"
+  :order-id="activeOrderId"
   @close="showBakongModal = false"
 />
   </div>

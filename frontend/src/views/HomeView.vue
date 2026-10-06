@@ -19,7 +19,7 @@ const newRoom = ref({
   description: '',
   grade_level: 'all',
   category_tag: '☕ Cafe Vibes',
-  is_private: false,
+  access_mode: 'public',
   passcode: ''
 })
 
@@ -55,12 +55,20 @@ const filteredRooms = computed(() => {
   return rooms.value.filter(r => r.grade_level === selectedGrade.value)
 })
 
-const handleJoin = (room) => {
-  if (room.is_private) {
+const handleJoin = async (room) => {
+  const accessMode = room.access_mode || (room.is_private ? 'pin' : 'public')
+  if (accessMode === 'pin') {
     targetRoom.value = room
     inputPin.value = ''
     pinError.value = ''
     showPinModal.value = true
+  } else if (accessMode === 'approval') {
+    try {
+      await apiClient.post(`/rooms/${room.id}/request-join`)
+      router.push({ name: 'room', params: { id: room.id } })
+    } catch (error) {
+      alert(error.response?.data?.message || 'Could not request access to this room.')
+    }
   } else {
     router.push({ name: 'room', params: { id: room.id } })
   }
@@ -104,8 +112,9 @@ const createRoom = async () => {
       description: newRoom.value.description,
       grade_level: newRoom.value.grade_level,
       category_tag: newRoom.value.category_tag,
-      is_private: Boolean(newRoom.value.is_private),
-      passcode: newRoom.value.is_private ? newRoom.value.passcode : null
+      access_mode: newRoom.value.access_mode,
+      is_private: newRoom.value.access_mode !== 'public',
+      passcode: newRoom.value.access_mode === 'pin' ? newRoom.value.passcode : null
     }
 
     const res = await apiClient.post('/rooms', payload)
@@ -117,7 +126,7 @@ const createRoom = async () => {
     // Reset Form
     newRoom.value.title = ''
     newRoom.value.subtitle_khmer = ''
-    newRoom.value.is_private = false
+    newRoom.value.access_mode = 'public'
     newRoom.value.passcode = ''
 
     alert('បង្កើតបន្ទប់រៀនបានជោគជ័យ! 🎉')
@@ -258,10 +267,14 @@ onMounted(() => {
               <label for="privateToggle" class="text-[11px] text-slate-300 font-khmer cursor-pointer flex items-center gap-1.5">
                 <i class="fa-solid fa-lock text-amber-400 text-xs"></i> ធ្វើជាបន្ទប់ឯកជន (Private Room)
               </label>
-              <input type="checkbox" id="privateToggle" v-model="newRoom.is_private" class="accent-amber-400 w-4 h-4 cursor-pointer" />
+              <select id="privateToggle" v-model="newRoom.access_mode" class="bg-slate-900 border border-slate-700 rounded-xl px-2 py-1 text-xs text-white">
+                <option value="public">Public room</option>
+                <option value="pin">Private with PIN</option>
+                <option value="approval">Private with admin approval</option>
+              </select>
             </div>
 
-            <div v-if="newRoom.is_private">
+            <div v-if="newRoom.access_mode === 'pin'">
               <label class="text-[10px] text-slate-400 block mb-1">កំណត់លេខកូដសម្ងាត់ PIN (៤ ខ្ទង់)៖</label>
               <input v-model="newRoom.passcode" type="password" maxlength="6" placeholder="ឧ. 1234" required class="w-full bg-slate-900 border border-amber-400 rounded-xl p-2 text-white font-mono tracking-widest text-center" />
             </div>

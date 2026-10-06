@@ -42,4 +42,49 @@ class User extends Authenticatable
             'password' => 'hashed',
         ];
     }
+
+    public function aiConversations()
+    {
+        return $this->hasMany(AiConversation::class);
+    }
+
+    public function aiMessages()
+    {
+        return $this->hasMany(AiMessage::class);
+    }
+
+    public function tasks()
+    {
+        return $this->hasMany(Task::class);
+    }
+
+    public function roomsCreated()
+    {
+        return $this->hasMany(Room::class, 'creator_id');
+    }
+
+    public function roomParticipants()
+    {
+        return $this->hasMany(RoomParticipant::class);
+    }
+
+    public function sentRoomInvites()
+    {
+        return $this->hasMany(RoomInvite::class, 'inviter_id');
+    }
+
+    public function receivedRoomInvites()
+    {
+        return $this->hasMany(RoomInvite::class, 'invitee_id');
+    }
+
+    public function orders()
+    {
+        return $this->hasMany(Order::class);
+    }
+
+    public function studySessions()
+    {
+        return $this->hasMany(StudySession::class);
+    }
 }

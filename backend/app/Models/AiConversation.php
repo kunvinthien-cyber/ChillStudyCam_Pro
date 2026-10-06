@@ -12,4 +12,9 @@ class AiConversation extends Model
     {
         return $this->hasMany(AiMessage::class, 'conversation_id')->oldest();
     }
+
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
 }

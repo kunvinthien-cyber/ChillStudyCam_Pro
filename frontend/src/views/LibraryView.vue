@@ -4,7 +4,7 @@ import apiClient from '../services/api'
 import { useUser } from '../composables/useUser'
 import StudyDiagnosticModal from '../components/StudyDiagnosticModal.vue'
 
-const { user, deductCoins } = useUser()
+const { user } = useUser()
 
 const documents = ref([])
 const isLoading = ref(true)
@@ -47,9 +47,7 @@ const handleDownload = async (doc) => {
     const res = await apiClient.post(`/documents/${doc.id}/download`)
 
     // កាត់កាក់បើជាឯកសារគិត PTS
-    if (doc.pts_cost > 0) {
-      deductCoins(doc.pts_cost)
-    }
+    user.value.coins = res.data.remaining_coins
 
     doc.downloads_count++
     alert(res.data.message)

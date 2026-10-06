@@ -7,4 +7,9 @@ use Illuminate\Database\Eloquent\Model;
 class RoomReaction extends Model
 {
     protected $guarded = [];
+
+    public function room()
+    {
+        return $this->belongsTo(Room::class);
+    }
 }

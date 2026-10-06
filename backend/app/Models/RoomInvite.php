@@ -19,4 +19,9 @@ class RoomInvite extends Model
     {
         return $this->belongsTo(User::class, 'inviter_id');
     }
+
+    public function invitee()
+    {
+        return $this->belongsTo(User::class, 'invitee_id');
+    }
 }

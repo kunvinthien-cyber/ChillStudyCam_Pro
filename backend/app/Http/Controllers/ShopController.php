@@ -32,14 +32,15 @@ class ShopController extends Controller
         ]);
 
         $result = DB::transaction(function () use ($validated, $user) {
-            $product = Product::findOrFail($validated['product_id']);
+            $lockedUser = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+            $product = Product::whereKey($validated['product_id'])->lockForUpdate()->firstOrFail();
             $pointsToUse = (int) $validated['pts_used'];
 
             if ($pointsToUse !== 0 && $pointsToUse !== (int) $product->pts_price) {
                 return ['error' => 'Invalid points amount for this product.', 'status' => 422];
             }
 
-            if ($pointsToUse > $user->coins) {
+            if ($pointsToUse > $lockedUser->coins) {
                 return ['error' => 'You do not have enough points for this purchase.', 'status' => 422];
             }
 
@@ -54,21 +55,21 @@ class ShopController extends Controller
 
             $cashAmount = number_format(max(0, $cashCents) / 100, 2, '.', '');
 
-            $user->coins -= $pointsToUse;
-            $user->save();
+            $lockedUser->coins -= $pointsToUse;
+            $lockedUser->save();
 
             $order = Order::create([
-                'user_id' => $user->id,
+                'user_id' => $lockedUser->id,
                 'product_id' => $product->id,
                 'fulfillment_type' => $validated['fulfillment_type'],
                 'delivery_address' => $validated['delivery_address'] ?? null,
                 'phone_number' => $validated['phone_number'] ?? null,
                 'pts_used' => $pointsToUse,
                 'final_cash_amount' => $cashAmount,
-                'status' => 'completed',
+                'status' => 'pending_payment',
             ]);
 
-            return ['order' => $order, 'remaining_coins' => $user->coins];
+            return ['order' => $order, 'remaining_coins' => $lockedUser->coins];
         });
 
         if (isset($result['error'])) {

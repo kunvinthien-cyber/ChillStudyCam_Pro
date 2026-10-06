@@ -11,6 +11,7 @@ const roomId = route.params.id
 
 const room = ref(null)
 const isLoading = ref(true)
+const isWaitingForApproval = ref(false)
 
 // ==========================================
 // 🛡️ ADMIN, PERMISSIONS & INVITE SYSTEM
@@ -451,6 +452,14 @@ const modes = { focus: 25 * 60, shortBreak: 5 * 60, longBreak: 15 * 60 }
 const currentMode = ref('focus')
 const timeLeft = ref(modes.focus)
 const isRunning = ref(false)
+const isStartingTimer = ref(false)
+const createStudySessionKey = () => globalThis.crypto?.randomUUID?.()
+  || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, char => {
+    const random = Math.random() * 16 | 0
+    return (char === 'x' ? random : (random & 0x3 | 0x8)).toString(16)
+  })
+const activeStudySessionKey = ref(createStudySessionKey())
+let studySessionStarted = false
 let timerInterval = null
 const showCelebration = ref(false)
 
@@ -460,12 +469,25 @@ const formattedTime = computed(() => {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 })
 
-const startTimer = () => {
-  if (isRunning.value) return
+const startTimer = async () => {
+  if (isRunning.value || isStartingTimer.value || timeLeft.value <= 0) return
+  if (currentMode.value === 'focus') {
+    isStartingTimer.value = true
+    try {
+      await apiClient.post('/study/start', { room_id: roomId, session_key: activeStudySessionKey.value })
+      studySessionStarted = true
+    } catch (error) {
+      alert(error.response?.data?.message || 'Could not start a study session.')
+      isStartingTimer.value = false
+      return
+    }
+    isStartingTimer.value = false
+  }
+
   isRunning.value = true
   timerInterval = setInterval(() => {
     if (timeLeft.value > 0) timeLeft.value--
-    else {
+    if (timeLeft.value === 0) {
       isRunning.value = false
       clearInterval(timerInterval)
       playZenBell()
@@ -474,9 +496,24 @@ const startTimer = () => {
   }, 1000)
 }
 
+const pauseTimer = () => {
+  isRunning.value = false
+  clearInterval(timerInterval)
+  timerInterval = null
+}
+
+const resetTimer = (mode = currentMode.value) => {
+  pauseTimer()
+  currentMode.value = mode
+  timeLeft.value = modes[mode]
+  activeStudySessionKey.value = createStudySessionKey()
+  studySessionStarted = false
+}
+
 const claimReward = async () => {
   try {
-    const res = await apiClient.post('/study/complete', { room_id: roomId, duration_minutes: 25 })
+    if (!studySessionStarted) return
+    const res = await apiClient.post('/study/complete', { session_key: activeStudySessionKey.value })
     addReward(res.data.reward.earned_coins, res.data.reward.studied_hours)
     showCelebration.value = true
   } catch {
@@ -489,29 +526,51 @@ const fetchRoomDetail = async () => {
     isLoading.value = true
     const res = await apiClient.get(`/rooms/${roomId}`)
     room.value = res.data
+    isWaitingForApproval.value = false
+    return true
+  } catch (error) {
+    if (error.response?.status === 403) {
+      const status = await apiClient.get(`/rooms/${roomId}/check-approval`).catch(() => null)
+      if (status?.data?.requested && !status.data.approved) {
+        isWaitingForApproval.value = true
+      } else {
+        router.replace({ name: 'home' })
+      }
+    }
+    return false
   } finally {
     isLoading.value = false
   }
 }
 
-onMounted(async () => {
-  fetchRoomDetail()
-  fetchMessages()
-  fetchRoomDocs()
-
-  // ១. ចុះឈ្មោះវត្តមានភ្លាម
-  // ១. ចាប់ផ្តើម PeerJS ដើម្បីឱ្យអ្នកនៅក្នុងបន្ទប់អាចទទួល Screen Share បាន ទោះមិន Join Voice ក៏ដោយ
-  initPeer()
+const activateRoom = async () => {
   await registerPresence()
-  // ២. ទាញយកសមាជិក
+  await Promise.all([fetchMessages(), fetchRoomDocs()])
   syncParticipants()
-
   syncTimer = setInterval(() => {
     fetchMessages()
     fetchRemoteReactions()
     registerPresence()
     syncParticipants()
   }, 2500)
+}
+
+onMounted(async () => {
+  initPeer()
+  if (await fetchRoomDetail()) {
+    await activateRoom()
+    return
+  }
+
+  if (isWaitingForApproval.value) {
+    syncTimer = setInterval(async () => {
+      const status = await apiClient.get(`/rooms/${roomId}/check-approval`).catch(() => null)
+      if (status?.data?.approved && await fetchRoomDetail()) {
+        clearInterval(syncTimer)
+        await activateRoom()
+      }
+    }, 2500)
+  }
 })
 
 onUnmounted(async () => {
@@ -522,6 +581,7 @@ onUnmounted(async () => {
   if (myPeerId.value) {
     await apiClient.post(`/rooms/${roomId}/voice/leave`, { peer_id: myPeerId.value }).catch(() => {})
   }
+  await apiClient.post(`/rooms/${roomId}/leave`).catch(() => {})
   if (localStream) localStream.getTracks().forEach(t => t.stop())
   document.querySelectorAll('audio[id^="audio-"]').forEach(el => el.remove())
   if (peer) peer.destroy()
@@ -533,6 +593,13 @@ onUnmounted(async () => {
   <div v-if="isLoading" class="text-center py-24 text-slate-400">
     <div class="w-8 h-8 border-4 border-amber-400 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
     កំពុងចូលទៅកាន់បន្ទប់សិក្សា...
+  </div>
+
+  <div v-else-if="isWaitingForApproval" class="max-w-md mx-auto mt-24 p-6 text-center rounded-3xl border border-amber-500/30 bg-slate-900">
+    <i class="fa-solid fa-hourglass-half text-amber-400 text-3xl mb-3"></i>
+    <h2 class="text-white font-bold mb-2">Waiting for room admin approval</h2>
+    <p class="text-sm text-slate-400">This page will open automatically after your request is approved.</p>
+    <button @click="router.push({ name: 'home' })" class="mt-4 px-4 py-2 rounded-xl bg-slate-800 text-slate-200 text-sm">Back to rooms</button>
   </div>
 
   <div v-else-if="room" class="relative min-h-[88vh] flex flex-col justify-between rounded-3xl overflow-hidden border border-slate-800 bg-slate-950/70 p-4 sm:p-6 backdrop-blur-xl">
@@ -663,10 +730,10 @@ onUnmounted(async () => {
         <div class="bg-slate-900/90 border border-slate-800 p-6 sm:p-8 rounded-3xl shadow-2xl max-w-sm w-full text-center relative">
 
           <div class="flex items-center justify-center gap-1 p-1 bg-slate-950/80 rounded-2xl border border-slate-800 mb-5">
-            <button @click="currentMode = 'focus'; timeLeft = modes.focus" :class="currentMode === 'focus' ? 'bg-amber-400 text-slate-950 font-bold' : 'text-slate-400'" class="px-3 py-1.5 rounded-xl text-xs transition">
+            <button @click="resetTimer('focus')" :class="currentMode === 'focus' ? 'bg-amber-400 text-slate-950 font-bold' : 'text-slate-400'" class="px-3 py-1.5 rounded-xl text-xs transition">
               Focus (25m)
             </button>
-            <button @click="currentMode = 'shortBreak'; timeLeft = modes.shortBreak" :class="currentMode === 'shortBreak' ? 'bg-amber-400 text-slate-950 font-bold' : 'text-slate-400'" class="px-3 py-1.5 rounded-xl text-xs transition">
+            <button @click="resetTimer('shortBreak')" :class="currentMode === 'shortBreak' ? 'bg-amber-400 text-slate-950 font-bold' : 'text-slate-400'" class="px-3 py-1.5 rounded-xl text-xs transition">
               Break (5m)
             </button>
           </div>
@@ -676,11 +743,11 @@ onUnmounted(async () => {
           </div>
 
           <div class="flex items-center justify-center gap-3">
-            <button @click="isRunning ? (isRunning = false) : startTimer()" :class="isRunning ? 'bg-amber-500 text-slate-950' : 'bg-emerald-400 text-slate-950'" class="px-6 py-2.5 rounded-2xl font-bold text-xs transition shadow-lg hover:scale-105 flex items-center gap-2">
+            <button @click="isRunning ? pauseTimer() : startTimer()" :class="isRunning ? 'bg-amber-500 text-slate-950' : 'bg-emerald-400 text-slate-950'" class="px-6 py-2.5 rounded-2xl font-bold text-xs transition shadow-lg hover:scale-105 flex items-center gap-2">
               <i :class="isRunning ? 'fa-solid fa-pause' : 'fa-solid fa-play'"></i>
               <span>{{ isRunning ? 'ផ្អាក (Pause)' : 'ចាប់ផ្តើមផ្តោត' }}</span>
             </button>
-            <button @click="timeLeft = modes[currentMode]" class="w-10 h-10 rounded-2xl bg-slate-800 text-slate-300 flex items-center justify-center hover:bg-slate-700 transition" title="Reset">
+            <button @click="resetTimer()" class="w-10 h-10 rounded-2xl bg-slate-800 text-slate-300 flex items-center justify-center hover:bg-slate-700 transition" title="Reset">
               <i class="fa-solid fa-rotate-right text-xs"></i>
             </button>
           </div>

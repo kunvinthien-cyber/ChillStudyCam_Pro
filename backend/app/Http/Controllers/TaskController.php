@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Models\Task;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use App\Models\User;
 
 class TaskController extends Controller
 {
@@ -46,30 +48,31 @@ class TaskController extends Controller
     public function toggle(Request $request, Task $task)
     {
         $user = $request->user();
+        if (! $user) return response()->json(['message' => 'Unauthenticated.'], 401);
 
-        if (! $user) {
-            return response()->json(['message' => 'Unauthenticated.'], 401);
-        }
+        return DB::transaction(function () use ($task, $user) {
+            $lockedTask = Task::whereKey($task->id)->lockForUpdate()->firstOrFail();
+            if ((int) $lockedTask->user_id !== (int) $user->id) {
+                return response()->json(['message' => 'Forbidden.'], 403);
+            }
 
-        if ($task->user_id !== $user->id) {
-            return response()->json(['message' => 'Forbidden.'], 403);
-        }
+            $lockedTask->is_completed = ! $lockedTask->is_completed;
+            $earnedCoins = 0;
+            $lockedUser = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+            if ($lockedTask->is_completed && ! $lockedTask->rewarded_at) {
+                $lockedTask->rewarded_at = now();
+                $lockedUser->coins += 5;
+                $lockedUser->save();
+                $earnedCoins = 5;
+            }
+            $lockedTask->save();
 
-        $task->is_completed = ! $task->is_completed;
-        $task->save();
-
-        $earnedCoins = 0;
-        if ($task->is_completed) {
-            $user->coins += 5;
-            $user->save();
-            $earnedCoins = 5;
-        }
-
-        return response()->json([
-            'task' => $task,
-            'earned_coins' => $earnedCoins,
-            'total_coins' => $user->coins,
-        ]);
+            return response()->json([
+                'task' => $lockedTask,
+                'earned_coins' => $earnedCoins,
+                'total_coins' => $lockedUser->coins,
+            ]);
+        });
     }
 
     public function destroy(Request $request, Task $task)

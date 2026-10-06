@@ -3,7 +3,8 @@ defineProps({
   show: Boolean,
   amount: [Number, String],
   productName: String,
-  orderType: String
+  orderType: String,
+  orderId: [Number, String]
 })
 
 const emit = defineEmits(['close'])
@@ -33,6 +34,7 @@ const emit = defineEmits(['close'])
       <div class="p-5 text-center bg-white space-y-4">
         <div>
           <h2 id="khqr-demo-title" class="text-xs font-bold text-slate-800">CHILLSTUDY STORE</h2>
+          <p v-if="orderId" class="text-[10px] text-emerald-700 font-bold mt-1">Order #{{ orderId }} · Pending payment</p>
           <p class="text-[10px] text-slate-500 font-khmer mt-1">{{ productName }}</p>
           <p class="text-[10px] text-slate-500 font-khmer mt-1">
             {{ orderType === 'delivery' ? 'ដឹកជញ្ជូន' : 'ទៅយកផ្ទាល់' }}
@@ -48,7 +50,7 @@ const emit = defineEmits(['close'])
             <span>មិនមែនការទូទាត់ពិតទេ</span>
           </div>
           <p class="text-[11px] leading-relaxed text-amber-900 mt-2">
-            មិនមាន KHQR ពិតសម្រាប់ស្កេនទេ។ គំរូនេះមិនកាត់ប្រាក់ និងមិនបង្កើត Order ឡើយ។
+            No live Bakong QR is configured. This order is pending payment; no cash payment was processed.
           </p>
         </div>
 

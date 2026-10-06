@@ -67,10 +67,20 @@ const handleFileUpload = (e) => {
 }
 
 const convertImageToBase64 = (file) => {
+  if (!file || !file.type.startsWith('image/')) {
+    alert('Please select an image file.')
+    return
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    alert('Image must be 5 MB or smaller.')
+    return
+  }
+
   const reader = new FileReader()
   reader.onload = (event) => {
     attachedImage.value = event.target.result // Base64 Data URL
   }
+  reader.onerror = () => alert('Could not read that image. Please try another file.')
   reader.readAsDataURL(file)
 }
 
@@ -259,6 +269,24 @@ const deleteConv = async (conv, e) => {
 const handleVoiceMessage = (msg) => {
   messages.value.push({ ...msg, created_at: new Date().toISOString() })
   scrollToBottom()
+}
+
+const handleVoiceConversationUpdated = ({ id, title }) => {
+  if (!id) return
+  activeConversationId.value = id
+  activeConversationTitle.value = title || activeConversationTitle.value
+  const existing = conversations.value.find(conversation => conversation.id === id)
+  if (existing) {
+    existing.updated_at = new Date().toISOString()
+    if (title) existing.title = title
+  } else {
+    conversations.value.unshift({
+      id,
+      title: title || 'Voice study session',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+  }
 }
 
 // 📅 Grouped History
@@ -578,7 +606,7 @@ onMounted(() => {
     </Teleport>
 
     <!-- Voice Call Modal -->
-    <AiVoiceCallModal :show="showVoiceCallModal" :messages="messages" @new-message="handleVoiceMessage" @close="showVoiceCallModal = false" />
+    <AiVoiceCallModal :show="showVoiceCallModal" :messages="messages" :conversation-id="activeConversationId" @new-message="handleVoiceMessage" @conversation-updated="handleVoiceConversationUpdated" @close="showVoiceCallModal = false" />
 
   </aside>
 </template>

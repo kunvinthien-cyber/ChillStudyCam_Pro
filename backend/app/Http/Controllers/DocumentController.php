@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Document;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class DocumentController extends Controller
 {
@@ -28,24 +29,35 @@ class DocumentController extends Controller
     public function download(Request $request, Document $document)
     {
         $user = $request->user();
+        $result = DB::transaction(function () use ($document, $user) {
+            $lockedDocument = Document::whereKey($document->id)->lockForUpdate()->firstOrFail();
+            $lockedUser = $user ? $user->newQuery()->whereKey($user->id)->lockForUpdate()->first() : null;
 
-        if ($document->pts_cost > 0) {
-            if (!$user || $user->coins < $document->pts_cost) {
-                return response()->json(['message' => 'កាក់ PTS របស់អ្នកមិនគ្រប់គ្រាន់ដើម្បីដោះសោឯកសារនេះឡើយ!'], 400);
+            if ($lockedDocument->pts_cost > 0 && (! $lockedUser || $lockedUser->coins < $lockedDocument->pts_cost)) {
+                return ['error' => 'Not enough points to download this document.', 'status' => 400];
             }
 
-            // កាត់កាក់ PTS
-            $user->coins -= $document->pts_cost;
-            $user->save();
+            if ($lockedDocument->pts_cost > 0) {
+                $lockedUser->coins -= $lockedDocument->pts_cost;
+                $lockedUser->save();
+            }
+
+            $lockedDocument->increment('downloads_count');
+
+            return [
+                'document' => $lockedDocument,
+                'remaining_coins' => $lockedUser?->coins ?? 0,
+            ];
+        });
+
+        if (isset($result['error'])) {
+            return response()->json(['message' => $result['error']], $result['status']);
         }
 
-        // បូកចំនួន Download
-        $document->increment('downloads_count');
-
         return response()->json([
-            'message' => 'ដោះសោជោគជ័យ!',
-            'file_url' => $document->file_url,
-            'remaining_coins' => $user ? $user->coins : 0
+            'message' => 'Download ready.',
+            'file_url' => $result['document']->file_url,
+            'remaining_coins' => $result['remaining_coins'],
         ]);
     }
 }
