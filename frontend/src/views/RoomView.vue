@@ -127,10 +127,50 @@ const screenVideoRef = ref(null)
 const remoteScreenStream = ref(null)
 const remoteScreenVideoRef = ref(null)
 const remoteScreenSharerName = ref('')
+const screenShareError = ref('')
+const screenCalledPeers = new Set()
+let screenTrackEndedHandler = null
+
+const shareScreenWithParticipants = (participants) => {
+  if (!isScreenSharing.value || !peer?.open || !screenStream.value) return
+
+  participants.forEach((participant) => {
+    if (!participant.peer_id || participant.peer_id === myPeerId.value || screenCalledPeers.has(participant.peer_id)) return
+    const call = peer.call(participant.peer_id, screenStream.value, {
+      metadata: { type: 'screen', senderName: user.value?.name || 'Friend' },
+    })
+    if (!call) return
+    screenCalledPeers.add(participant.peer_id)
+    call.on('error', () => screenCalledPeers.delete(participant.peer_id))
+    call.on('close', () => screenCalledPeers.delete(participant.peer_id))
+  })
+}
+
+const waitForPeerReady = () => {
+  if (peerReady.value) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    if (!peer) return reject(new Error('Room connection is unavailable.'))
+    const timeout = setTimeout(() => {
+      cleanup()
+      reject(new Error('Room connection timed out. Please try again.'))
+    }, 10000)
+    const cleanup = () => {
+      clearTimeout(timeout)
+      peer.off('open', onOpen)
+      peer.off('error', onError)
+    }
+    const onOpen = () => { cleanup(); resolve() }
+    const onError = (error) => { cleanup(); reject(error) }
+    peer.on('open', onOpen)
+    peer.on('error', onError)
+  })
+}
 
 const toggleScreenShare = async () => {
   if (!isScreenSharing.value) {
     try {
+      screenShareError.value = ''
+      await waitForPeerReady()
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
       screenStream.value = stream
       isScreenSharing.value = true
@@ -138,18 +178,12 @@ const toggleScreenShare = async () => {
       await nextTick()
       if (screenVideoRef.value) screenVideoRef.value.srcObject = stream
 
-      // 📡 បាញ់ខ្សែវីដេអូ Screen ទៅកាន់សិស្សទាំងអស់ក្នុងបន្ទប់តាម PeerJS
-      if (peer) {
-        allParticipants.value.forEach(p => {
-          if (p.peer_id && p.peer_id !== myPeerId.value) {
-            peer.call(p.peer_id, stream, { metadata: { type: 'screen', senderName: user.value?.name || 'Friend' } })
-          }
-        })
-      }
-
-      stream.getVideoTracks()[0].onended = () => stopScreenShare()
-    } catch {
-      // Ignore screen share permission errors.
+      shareScreenWithParticipants(allParticipants.value)
+      screenTrackEndedHandler = () => stopScreenShare()
+      stream.getVideoTracks()[0].addEventListener('ended', screenTrackEndedHandler, { once: true })
+    } catch (error) {
+      screenShareError.value = error?.message || 'Could not start screen sharing.'
+      stopScreenShare()
     }
   } else {
     stopScreenShare()
@@ -158,9 +192,13 @@ const toggleScreenShare = async () => {
 
 const stopScreenShare = () => {
   if (screenStream.value) {
-    screenStream.value.getTracks().forEach(track => track.stop())
+    const track = screenStream.value.getVideoTracks()[0]
+    if (track && screenTrackEndedHandler) track.removeEventListener('ended', screenTrackEndedHandler)
+    screenStream.value.getTracks().forEach(mediaTrack => mediaTrack.stop())
     screenStream.value = null
   }
+  screenTrackEndedHandler = null
+  screenCalledPeers.clear()
   isScreenSharing.value = false
 }
 
@@ -191,9 +229,11 @@ const playZenBell = () => {
 // ==========================================
 const isInVoice = ref(false)
 const isMuted = ref(false)
+const audioPlaybackBlocked = ref(false)
 const myPeerId = ref('')
 const voiceUsers = ref([])
 const calledPeers = new Set()
+const peerReady = ref(false)
 let localStream = null
 let peer = null
 
@@ -203,6 +243,9 @@ const initPeer = () => {
   myPeerId.value = `cs-room${roomId}-${user.value?.id || 'guest'}-${randomSuffix}`
 
   peer = new window.Peer(myPeerId.value, { debug: 1 })
+  peer.on('open', () => { peerReady.value = true })
+  peer.on('disconnected', () => { peerReady.value = false })
+  peer.on('error', (error) => console.error('Room PeerJS error:', error))
 
   // ពេលមានគេ Call ចូលមក (អាចជា Voice ឬ Screen Share)
   peer.on('call', (call) => {
@@ -212,11 +255,17 @@ const initPeer = () => {
       call.on('stream', async (stream) => {
         remoteScreenStream.value = stream
         remoteScreenSharerName.value = call.metadata.senderName || 'មិត្តភក្តិ'
+        stream.getVideoTracks().forEach((track) => {
+          track.addEventListener('ended', () => { remoteScreenStream.value = null }, { once: true })
+        })
         await nextTick()
         if (remoteScreenVideoRef.value) {
           remoteScreenVideoRef.value.srcObject = stream
+          remoteScreenVideoRef.value.play().catch(() => {})
         }
       })
+      call.on('close', () => { remoteScreenStream.value = null })
+      call.on('error', () => { remoteScreenStream.value = null })
     } else {
       // បើជា Voice Audio ធម្មតា
       if (localStream) call.answer(localStream)
@@ -230,13 +279,18 @@ const initPeer = () => {
 const toggleVoiceJoin = async () => {
   if (!isInVoice.value) {
     try {
-      localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      localStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      })
+      await apiClient.post(`/rooms/${roomId}/voice/join`, { peer_id: myPeerId.value })
       isInVoice.value = true
       isMuted.value = false
-
-      await apiClient.post(`/rooms/${roomId}/voice/join`, { peer_id: myPeerId.value })
       syncParticipants()
     } catch {
+      localStream?.getTracks().forEach(track => track.stop())
+      localStream = null
+      isInVoice.value = false
       alert('សូមអនុញ្ញាតសិទ្ធិ Microphone ក្នុង Browser!')
     }
   } else {
@@ -254,11 +308,14 @@ const toggleVoiceJoin = async () => {
 }
 
 const callOtherPeers = (participants) => {
-  if (!isInVoice.value || !peer || !localStream) return
+  if (!isInVoice.value || !peerReady.value || !localStream) return
   participants.forEach(p => {
-    if (p.peer_id && p.peer_id !== myPeerId.value && !calledPeers.has(p.peer_id)) {
+    // One side initiates each pair, preventing duplicate audio paths and echo.
+    if (p.peer_id && myPeerId.value.localeCompare(p.peer_id) < 0 && !calledPeers.has(p.peer_id)) {
       calledPeers.add(p.peer_id)
       const call = peer.call(p.peer_id, localStream, { metadata: { type: 'voice' } })
+      call.on('error', () => calledPeers.delete(p.peer_id))
+      call.on('close', () => calledPeers.delete(p.peer_id))
       call.on('stream', (remoteStream) => {
         playRemoteAudio(p.peer_id, remoteStream)
       })
@@ -272,9 +329,22 @@ const playRemoteAudio = (peerId, stream) => {
     audioEl = document.createElement('audio')
     audioEl.id = `audio-${peerId}`
     audioEl.autoplay = true
+    audioEl.playsInline = true
     document.body.appendChild(audioEl)
   }
   audioEl.srcObject = stream
+  audioEl.play().then(() => {
+    audioPlaybackBlocked.value = false
+  }).catch(() => {
+    audioPlaybackBlocked.value = true
+  })
+}
+
+const enableRemoteAudio = () => {
+  document.querySelectorAll('audio[id^="audio-"]').forEach((audio) => {
+    audio.play().catch(() => {})
+  })
+  audioPlaybackBlocked.value = false
 }
 
 const toggleMute = () => {
@@ -302,6 +372,7 @@ const syncParticipants = async () => {
     const res = await apiClient.get(`/rooms/${roomId}/participants`)
     allParticipants.value = res.data
     voiceUsers.value = res.data.filter(p => p.is_in_voice)
+    shareScreenWithParticipants(res.data)
     if (isInVoice.value) {
       callOtherPeers(voiceUsers.value)
     }
@@ -452,6 +523,7 @@ onUnmounted(async () => {
     await apiClient.post(`/rooms/${roomId}/voice/leave`, { peer_id: myPeerId.value }).catch(() => {})
   }
   if (localStream) localStream.getTracks().forEach(t => t.stop())
+  document.querySelectorAll('audio[id^="audio-"]').forEach(el => el.remove())
   if (peer) peer.destroy()
   document.querySelectorAll('[id^="audio-cs-room"]').forEach(el => el.remove())
 })
@@ -540,6 +612,8 @@ onUnmounted(async () => {
           </div>
         </div>
 
+        <span class="text-[10px] text-slate-400 font-khmer">{{ allParticipants.length }} នាក់ក្នុងបន្ទប់</span>
+
         <span class="text-[10px] text-slate-400 font-khmer">
           {{ voiceUsers.length > 0 ? `(${voiceUsers.length} នាក់ក្នុង Call)` : '(គ្មានអ្នកក្នុង Call ទេ)' }}
         </span>
@@ -551,6 +625,10 @@ onUnmounted(async () => {
           <span>{{ isInVoice ? 'ចាកចេញពី Voice' : 'ចូលរួម Call សំឡេង' }}</span>
         </button>
 
+        <button v-if="audioPlaybackBlocked" @click="enableRemoteAudio" class="px-2.5 py-1.5 rounded-xl bg-amber-400 text-slate-950 text-[10px] font-bold">
+          បើកសំឡេង
+        </button>
+
         <button v-if="isInVoice" @click="toggleMute" :class="isMuted ? 'bg-rose-500 text-white' : 'bg-slate-800 text-emerald-400 border border-slate-700'" class="w-8 h-8 rounded-xl flex items-center justify-center text-xs transition" :title="isMuted ? 'បើក Mic' : 'បិទ Mic'">
           <i :class="isMuted ? 'fa-solid fa-microphone-slash' : 'fa-solid fa-microphone'"></i>
         </button>
@@ -558,6 +636,8 @@ onUnmounted(async () => {
     </div>
 
     <!-- 🖥️ SCREEN SHARE: អេក្រង់ខ្លួនឯង -->
+    <p v-if="screenShareError" class="relative z-10 text-center text-xs text-rose-300" role="alert">{{ screenShareError }}</p>
+
     <div v-if="isScreenSharing" class="relative z-10 w-full max-w-2xl mx-auto my-2 rounded-3xl overflow-hidden border border-amber-400/30 bg-black shadow-2xl animate-scale-up">
       <video ref="screenVideoRef" autoplay playsinline class="w-full h-64 sm:h-72 object-contain"></video>
       <div class="absolute top-3 left-3 px-3 py-1 rounded-full bg-black/70 backdrop-blur-md text-amber-300 text-[10px] font-bold border border-amber-500/20 flex items-center gap-1.5">

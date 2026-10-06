@@ -138,7 +138,16 @@ class RoomController extends Controller
             ->where('last_seen_at', '<', now()->subSeconds(30))
             ->delete();
 
-        return response()->json(RoomParticipant::where('room_id', $roomId)->get());
+        $participants = RoomParticipant::where('room_id', $roomId)
+            ->orderByDesc('last_seen_at')
+            ->orderByDesc('id')
+            ->get()
+            ->unique(fn ($participant) => $participant->user_id
+                ? 'user:' . $participant->user_id
+                : 'participant:' . $participant->id)
+            ->values();
+
+        return response()->json($participants);
     }
 
     public function joinVoice(Request $request, $roomId)
@@ -293,16 +302,17 @@ class RoomController extends Controller
         $user = $request->user() ?? User::first();
         $userName = $user ? $user->name : 'សិស្ស Chill ' . rand(10, 99);
 
-        $participant = RoomParticipant::updateOrCreate(
-            ['room_id' => $roomId, 'user_id' => $user ? $user->id : null],
-            [
-                'user_name' => $userName,
-                'peer_id' => $request->input('peer_id'),
-                'study_goal' => 'រៀនផ្ដោតអារម្មណ៍ ២៥ នាទី',
-                'is_in_voice' => false,
-                'last_seen_at' => now(),
-            ]
-        );
+        $participant = RoomParticipant::firstOrNew([
+            'room_id' => $roomId,
+            'user_id' => $user ? $user->id : null,
+        ]);
+
+        $participant->fill([
+            'user_name' => $userName,
+            'peer_id' => $request->input('peer_id') ?: $participant->peer_id,
+            'study_goal' => $participant->study_goal ?: 'រៀនផ្ដោតអារម្មណ៍ ២៥ នាទី',
+            'last_seen_at' => now(),
+        ])->save();
 
         return response()->json($participant);
     }
