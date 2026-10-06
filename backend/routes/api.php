@@ -62,6 +62,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/ai/messages/{id}/star', [AiController::class, 'toggleStar']);
     Route::get('/ai/history', [AiController::class, 'getHistory']);
     Route::delete('/ai/history', [AiController::class, 'clearHistory']);
+    Route::post('/rooms/{room}/enter', [RoomController::class, 'enterRoom']);
 });
 Route::get('/setup-database-chillstudy', function () {
     \Illuminate\Support\Facades\Artisan::call('migrate:fresh --seed --force');

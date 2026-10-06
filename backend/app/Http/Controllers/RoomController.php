@@ -146,16 +146,22 @@ class RoomController extends Controller
         $request->validate(['peer_id' => 'required|string']);
 
         $user = $request->user();
-        $participant = RoomParticipant::updateOrCreate(
-            ['room_id' => $roomId, 'peer_id' => $request->peer_id],
-            [
-                'user_id' => $user?->id,
-                'user_name' => $user?->name ?? 'សិស្ស Chill',
-                'is_in_voice' => true,
-                'is_muted' => false,
-                'last_seen_at' => now(),
-            ]
-        );
+        $participant = RoomParticipant::where('room_id', $roomId)
+            ->where('user_id', $user?->id)
+            ->first();
+
+        if (! $participant) {
+            $participant = RoomParticipant::firstOrNew(['room_id' => $roomId, 'peer_id' => $request->peer_id]);
+        }
+
+        $participant->fill([
+            'user_id' => $user?->id,
+            'peer_id' => $request->peer_id,
+            'user_name' => $user?->name ?? 'សិស្ស Chill',
+            'is_in_voice' => true,
+            'is_muted' => false,
+            'last_seen_at' => now(),
+        ])->save();
 
         return response()->json($participant);
     }
@@ -165,7 +171,7 @@ class RoomController extends Controller
         if ($request->filled('peer_id')) {
             RoomParticipant::where('room_id', $roomId)
                 ->where('peer_id', $request->peer_id)
-                ->delete();
+                ->update(['is_in_voice' => false, 'is_muted' => false, 'last_seen_at' => now()]);
         }
 
         return response()->json(['message' => 'Left voice']);
@@ -280,5 +286,24 @@ class RoomController extends Controller
         $participant->delete();
 
         return response()->json(['message' => 'បានបដិសេធ!']);
+    }
+    // 🚪 កត់ត្រាវត្តមានសិស្សភ្លាមៗពេលទើបចូលបន្ទប់
+    public function enterRoom(Request $request, $roomId)
+    {
+        $user = $request->user() ?? User::first();
+        $userName = $user ? $user->name : 'សិស្ស Chill ' . rand(10, 99);
+
+        $participant = RoomParticipant::updateOrCreate(
+            ['room_id' => $roomId, 'user_id' => $user ? $user->id : null],
+            [
+                'user_name' => $userName,
+                'peer_id' => $request->input('peer_id'),
+                'study_goal' => 'រៀនផ្ដោតអារម្មណ៍ ២៥ នាទី',
+                'is_in_voice' => false,
+                'last_seen_at' => now(),
+            ]
+        );
+
+        return response()->json($participant);
     }
 }

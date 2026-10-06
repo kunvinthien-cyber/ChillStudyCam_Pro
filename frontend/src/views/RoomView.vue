@@ -15,7 +15,6 @@ const isLoading = ref(true)
 // ==========================================
 // 🛡️ ADMIN, PERMISSIONS & INVITE SYSTEM
 // ==========================================
-// បើអ្នកបង្កើតបន្ទប់ = User កំពុង Login នោះគេជា Admin បន្ទប់
 const isAdmin = computed(() => {
   return room.value?.creator_id === user.value?.id || user.value?.id === 1
 })
@@ -67,7 +66,7 @@ const activeTab = ref('chat')
 const showDrawer = ref(true)
 
 // ==========================================
-// 🎯 PERSONAL INTENTION / GOAL (Sync)
+// 🎯 PERSONAL INTENTION / GOAL
 // ==========================================
 const myGoal = ref('រៀនផ្ដោតអារម្មណ៍ ២៥ នាទី')
 const isEditingGoal = ref(false)
@@ -76,18 +75,16 @@ const goalInput = ref('')
 const saveGoal = async () => {
   if (goalInput.value.trim()) {
     myGoal.value = goalInput.value.trim()
-    if (myPeerId.value) {
-      await apiClient.post(`/rooms/${roomId}/goal`, {
-        peer_id: myPeerId.value,
-        goal: myGoal.value
-      }).catch(() => {})
-    }
+    await apiClient.post(`/rooms/${roomId}/goal`, {
+      peer_id: myPeerId.value || 'local',
+      goal: myGoal.value
+    }).catch(() => {})
   }
   isEditingGoal.value = false
 }
 
 // ==========================================
-// 📄 ROOM DOCUMENTS (ទាញពី ChillLibrary)
+// 📄 ROOM DOCUMENTS
 // ==========================================
 const roomDocs = ref([])
 const fetchRoomDocs = async () => {
@@ -98,7 +95,7 @@ const fetchRoomDocs = async () => {
 }
 
 // ==========================================
-// 🌧️ IN-ROOM AMBIENT AUDIO
+// 🌧️ AMBIENT AUDIO
 // ==========================================
 const currentAmbient = ref(null)
 let ambientAudio = null
@@ -122,11 +119,14 @@ const toggleAmbient = (track) => {
 }
 
 // ==========================================
-// 🖥️ SCREEN SHARING
+// 🖥️ REAL WEBRTC SCREEN SHARING (អ្នកដទៃមើលឃើញពិតៗ)
 // ==========================================
 const isScreenSharing = ref(false)
 const screenStream = ref(null)
 const screenVideoRef = ref(null)
+const remoteScreenStream = ref(null)
+const remoteScreenVideoRef = ref(null)
+const remoteScreenSharerName = ref('')
 
 const toggleScreenShare = async () => {
   if (!isScreenSharing.value) {
@@ -134,10 +134,23 @@ const toggleScreenShare = async () => {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
       screenStream.value = stream
       isScreenSharing.value = true
+
       await nextTick()
       if (screenVideoRef.value) screenVideoRef.value.srcObject = stream
+
+      // 📡 បាញ់ខ្សែវីដេអូ Screen ទៅកាន់សិស្សទាំងអស់ក្នុងបន្ទប់តាម PeerJS
+      if (peer) {
+        allParticipants.value.forEach(p => {
+          if (p.peer_id && p.peer_id !== myPeerId.value) {
+            peer.call(p.peer_id, stream, { metadata: { type: 'screen', senderName: user.value?.name || 'Friend' } })
+          }
+        })
+      }
+
       stream.getVideoTracks()[0].onended = () => stopScreenShare()
-    } catch (err) {}
+    } catch {
+      // Ignore screen share permission errors.
+    }
   } else {
     stopScreenShare()
   }
@@ -168,11 +181,13 @@ const playZenBell = () => {
     gain.connect(audioCtx.destination)
     osc.start()
     osc.stop(audioCtx.currentTime + 3.5)
-  } catch (e) {}
+  } catch {
+    // Ignore audio context errors.
+  }
 }
 
 // ==========================================
-// 🎙️ WEBRTC VOICE CALL (PEERJS)
+// 🎙️ WEBRTC VOICE & PARTICIPANTS ENGINE
 // ==========================================
 const isInVoice = ref(false)
 const isMuted = ref(false)
@@ -182,29 +197,59 @@ const calledPeers = new Set()
 let localStream = null
 let peer = null
 
-const initPeerVoice = async () => {
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
-    const randomSuffix = Math.random().toString(36).substring(2, 7)
-    myPeerId.value = `cs-room${roomId}-${user.value?.id || 'guest'}-${randomSuffix}`
+// ចាប់ផ្តើម PeerJS ពេលបើកចូលបន្ទប់
+const initPeer = () => {
+  const randomSuffix = Math.random().toString(36).substring(2, 7)
+  myPeerId.value = `cs-room${roomId}-${user.value?.id || 'guest'}-${randomSuffix}`
 
-    peer = new window.Peer(myPeerId.value, { debug: 1 })
+  peer = new window.Peer(myPeerId.value, { debug: 1 })
 
-    peer.on('open', async (id) => {
-      isInVoice.value = true
-      isMuted.value = false
-      await apiClient.post(`/rooms/${roomId}/voice/join`, { peer_id: id })
-      syncParticipants()
-    })
-
-    peer.on('call', (call) => {
-      call.answer(localStream)
+  // ពេលមានគេ Call ចូលមក (អាចជា Voice ឬ Screen Share)
+  peer.on('call', (call) => {
+    // បើជា Screen Share ពីអ្នកដទៃ
+    if (call.metadata?.type === 'screen') {
+      call.answer() // ឆ្លើយតបទទួលយក Screen
+      call.on('stream', async (stream) => {
+        remoteScreenStream.value = stream
+        remoteScreenSharerName.value = call.metadata.senderName || 'មិត្តភក្តិ'
+        await nextTick()
+        if (remoteScreenVideoRef.value) {
+          remoteScreenVideoRef.value.srcObject = stream
+        }
+      })
+    } else {
+      // បើជា Voice Audio ធម្មតា
+      if (localStream) call.answer(localStream)
       call.on('stream', (remoteStream) => {
         playRemoteAudio(call.peer, remoteStream)
       })
-    })
-  } catch (err) {
-    alert('សូមអនុញ្ញាតសិទ្ធិ Microphone ក្នុង Browser!')
+    }
+  })
+}
+
+const toggleVoiceJoin = async () => {
+  if (!isInVoice.value) {
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      isInVoice.value = true
+      isMuted.value = false
+
+      await apiClient.post(`/rooms/${roomId}/voice/join`, { peer_id: myPeerId.value })
+      syncParticipants()
+    } catch {
+      alert('សូមអនុញ្ញាតសិទ្ធិ Microphone ក្នុង Browser!')
+    }
+  } else {
+    if (myPeerId.value) {
+      await apiClient.post(`/rooms/${roomId}/voice/leave`, { peer_id: myPeerId.value }).catch(() => {})
+    }
+    if (localStream) localStream.getTracks().forEach(t => t.stop())
+    document.querySelectorAll('[id^="audio-cs-room"]').forEach(el => el.remove())
+
+    calledPeers.clear()
+    isInVoice.value = false
+    isMuted.value = true
+    syncParticipants()
   }
 }
 
@@ -213,7 +258,7 @@ const callOtherPeers = (participants) => {
   participants.forEach(p => {
     if (p.peer_id && p.peer_id !== myPeerId.value && !calledPeers.has(p.peer_id)) {
       calledPeers.add(p.peer_id)
-      const call = peer.call(p.peer_id, localStream)
+      const call = peer.call(p.peer_id, localStream, { metadata: { type: 'voice' } })
       call.on('stream', (remoteStream) => {
         playRemoteAudio(p.peer_id, remoteStream)
       })
@@ -232,25 +277,6 @@ const playRemoteAudio = (peerId, stream) => {
   audioEl.srcObject = stream
 }
 
-const toggleVoiceJoin = async () => {
-  if (!isInVoice.value) {
-    await initPeerVoice()
-  } else {
-    if (myPeerId.value) {
-      await apiClient.post(`/rooms/${roomId}/voice/leave`, { peer_id: myPeerId.value }).catch(() => {})
-    }
-    if (localStream) localStream.getTracks().forEach(t => t.stop())
-    if (peer) peer.destroy()
-    document.querySelectorAll('[id^="audio-cs-room"]').forEach(el => el.remove())
-
-    calledPeers.clear()
-    isInVoice.value = false
-    isMuted.value = true
-    myPeerId.value = ''
-    syncParticipants()
-  }
-}
-
 const toggleMute = () => {
   if (!localStream) return
   isMuted.value = !isMuted.value
@@ -262,6 +288,15 @@ const pendingRequests = computed(() => {
   return allParticipants.value.filter(p => p.study_goal === 'pending_approval')
 })
 
+// 🚪 កត់ត្រាវត្តមានភ្លាមៗពេលទើបចូលបន្ទប់ (ឃើញឈ្មោះគ្នា ១០០%)
+const registerPresence = async () => {
+  try {
+    await apiClient.post(`/rooms/${roomId}/enter`, { peer_id: myPeerId.value })
+  } catch {
+          // no
+  }
+}
+
 const syncParticipants = async () => {
   try {
     const res = await apiClient.get(`/rooms/${roomId}/participants`)
@@ -270,7 +305,7 @@ const syncParticipants = async () => {
     if (isInVoice.value) {
       callOtherPeers(voiceUsers.value)
     }
-  } catch (err) {}
+  } catch {}
 }
 
 // ==========================================
@@ -284,20 +319,11 @@ const floatingStickers = ref([])
 const displayedReactionIds = new Set()
 let syncTimer = null
 
-const stickerOptions = [
-  { key: 'clap', emoji: '👏', icon: 'fa-solid fa-hands-clapping', label: 'ស៊ូៗ' },
-  { key: 'coffee', emoji: '☕', icon: 'fa-solid fa-mug-hot', label: 'កាហ្វេ' },
-  { key: 'power', emoji: '💪', icon: 'fa-solid fa-dumbbell', label: 'តស៊ូ' },
-  { key: 'love', emoji: '❤️', icon: 'fa-solid fa-heart', label: 'ចូលចិត្ត' }
-]
-
-const sendSticker = async (stickerKey) => {
-  const selectedSticker = stickerOptions.find((item) => item.key === stickerKey) || stickerOptions[0]
-
+const sendSticker = async (emoji) => {
   try {
-    animateSticker(selectedSticker, user.value?.name || 'You')
-    await apiClient.post(`/rooms/${roomId}/reactions`, { emoji: selectedSticker.emoji })
-  } catch (err) {}
+    animateSticker(emoji, user.value?.name || 'You')
+    await apiClient.post(`/rooms/${roomId}/reactions`, { emoji })
+  } catch {}
 }
 
 const fetchRemoteReactions = async () => {
@@ -306,30 +332,17 @@ const fetchRemoteReactions = async () => {
     res.data.forEach(r => {
       if (!displayedReactionIds.has(r.id)) {
         displayedReactionIds.add(r.id)
-        const remoteSticker = stickerOptions.find((item) => item.emoji === r.emoji) || {
-          emoji: r.emoji,
-          icon: 'fa-solid fa-star',
-          label: 'reaction'
-        }
-
         if (r.user_name !== (user.value?.name || 'You')) {
-          animateSticker(remoteSticker, r.user_name)
+          animateSticker(r.emoji, r.user_name)
         }
       }
     })
-  } catch (err) {}
+  } catch {}
 }
 
-const animateSticker = (sticker, senderName) => {
+const animateSticker = (emoji, senderName) => {
   const id = Math.random()
-  floatingStickers.value.push({
-    id,
-    emoji: sticker.emoji,
-    iconClass: sticker.icon,
-    senderName,
-    x: Math.random() * 60 + 20
-  })
-
+  floatingStickers.value.push({ id, emoji, senderName, x: Math.random() * 60 + 20 })
   setTimeout(() => {
     floatingStickers.value = floatingStickers.value.filter(s => s.id !== id)
   }, 3000)
@@ -341,7 +354,7 @@ const fetchMessages = async () => {
     chatMessages.value = res.data
     await nextTick()
     if (chatContainer.value) chatContainer.value.scrollTop = chatContainer.value.scrollHeight
-  } catch (err) {}
+  } catch {}
 }
 
 const sendChatMessage = async () => {
@@ -355,14 +368,14 @@ const sendChatMessage = async () => {
     chatMessages.value.push(res.data)
     await nextTick()
     if (chatContainer.value) chatContainer.value.scrollTop = chatContainer.value.scrollHeight
-  } catch (err) {
+  } catch {
     alert('មិនអាចផ្ញើសារបានទេ!')
   } finally {
     isSendingMessage.value = false
   }
 }
 
-// Timer
+// Pomodoro
 const modes = { focus: 25 * 60, shortBreak: 5 * 60, longBreak: 15 * 60 }
 const currentMode = ref('focus')
 const timeLeft = ref(modes.focus)
@@ -395,7 +408,9 @@ const claimReward = async () => {
     const res = await apiClient.post('/study/complete', { room_id: roomId, duration_minutes: 25 })
     addReward(res.data.reward.earned_coins, res.data.reward.studied_hours)
     showCelebration.value = true
-  } catch (err) {}
+  } catch {
+    // Ignore reward claim errors.
+  }
 }
 
 const fetchRoomDetail = async () => {
@@ -408,15 +423,22 @@ const fetchRoomDetail = async () => {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   fetchRoomDetail()
   fetchMessages()
-  syncParticipants()
   fetchRoomDocs()
+
+  // ១. ចុះឈ្មោះវត្តមានភ្លាម
+  // ១. ចាប់ផ្តើម PeerJS ដើម្បីឱ្យអ្នកនៅក្នុងបន្ទប់អាចទទួល Screen Share បាន ទោះមិន Join Voice ក៏ដោយ
+  initPeer()
+  await registerPresence()
+  // ២. ទាញយកសមាជិក
+  syncParticipants()
 
   syncTimer = setInterval(() => {
     fetchMessages()
     fetchRemoteReactions()
+    registerPresence()
     syncParticipants()
   }, 2500)
 })
@@ -443,7 +465,6 @@ onUnmounted(async () => {
 
   <div v-else-if="room" class="relative min-h-[88vh] flex flex-col justify-between rounded-3xl overflow-hidden border border-slate-800 bg-slate-950/70 p-4 sm:p-6 backdrop-blur-xl">
 
-    <!-- Background Backdrop -->
     <div class="absolute inset-0 bg-cover bg-center opacity-15 pointer-events-none filter blur-sm scale-105" :style="{ backgroundImage: `url(${room.thumbnail})` }"></div>
 
     <!-- Floating Live Stickers -->
@@ -452,13 +473,11 @@ onUnmounted(async () => {
         <span class="text-xs px-2.5 py-0.5 rounded-full bg-slate-900/95 text-amber-300 font-bold border border-amber-500/30 mb-1 shadow-lg font-khmer">
           {{ s.senderName }}
         </span>
-        <i :class="[s.iconClass, 'text-2xl text-amber-300 drop-shadow-md']"></i>
+        <span class="text-4xl drop-shadow-md">{{ s.emoji }}</span>
       </div>
     </div>
 
-    <!-- ============================================== -->
-    <!-- 1. TOP HEADER: TITLE, INVITE BUTTON & MODES     -->
-    <!-- ============================================== -->
+    <!-- Header -->
     <div class="relative z-10 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
       <div class="flex items-center gap-3">
         <button @click="router.push('/')" class="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold flex items-center gap-2 border border-slate-700 transition">
@@ -471,7 +490,7 @@ onUnmounted(async () => {
               {{ room.badge_tag || 'Community' }}
             </span>
             <span v-if="isAdmin" class="px-2 py-0.5 rounded-full text-[9px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
-              👑 អ្នកជា Admin
+              <i class="fa-solid fa-crown"></i> អ្នកជា Admin
             </span>
           </div>
           <p class="text-[11px] text-slate-400 font-khmer mt-0.5">{{ room.subtitle_khmer }}</p>
@@ -479,40 +498,22 @@ onUnmounted(async () => {
       </div>
 
       <div class="flex items-center gap-2">
-        <!-- ប៊ូតុង Invite មិត្តភក្តិ -->
-        <button
-          @click="showInviteModal = true"
-          class="px-3 py-1 rounded-full text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-amber-400 border border-amber-500/30 transition flex items-center gap-1.5 shadow"
-        >
-          <i class="fa-solid fa-user-plus text-[10px]"></i>
-          <span>អញ្ជើញ (Invite)</span>
+        <button @click="showInviteModal = true" class="px-3 py-1 rounded-full text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-amber-400 border border-amber-500/30 transition flex items-center gap-1.5 shadow">
+          <i class="fa-solid fa-user-plus text-[10px]"></i> <span>អញ្ជើញ (Invite)</span>
         </button>
 
-        <!-- ប៊ូតុង Share Screen -->
-        <button
-          @click="toggleScreenShare"
-          :class="isScreenSharing ? 'bg-rose-500 text-white' : 'bg-slate-900 text-slate-300 border border-slate-700'"
-          class="px-3.5 py-1 rounded-full text-xs transition flex items-center gap-1.5 shadow"
-        >
+        <button @click="toggleScreenShare" :class="isScreenSharing ? 'bg-rose-500 text-white' : 'bg-slate-900 text-slate-300 border border-slate-700'" class="px-3.5 py-1 rounded-full text-xs transition flex items-center gap-1.5 shadow">
           <i :class="isScreenSharing ? 'fa-solid fa-desktop' : 'fa-solid fa-arrow-up-from-bracket'"></i>
           <span>{{ isScreenSharing ? 'បិទ Screen' : 'Share Screen' }}</span>
         </button>
 
-        <!-- Drawer Toggle -->
-        <button
-          @click="showDrawer = !showDrawer"
-          :class="showDrawer ? 'bg-amber-400 text-slate-950 font-bold' : 'bg-slate-900 text-slate-300 border border-slate-700'"
-          class="px-3 py-1 rounded-full text-xs transition flex items-center gap-1.5 shadow"
-        >
-          <i class="fa-solid fa-sidebar"></i>
-          <span>{{ showDrawer ? 'បង្រួមផ្ទាំង' : 'បើកផ្ទាំងជំនួយ' }}</span>
+        <button @click="showDrawer = !showDrawer" :class="showDrawer ? 'bg-amber-400 text-slate-950 font-bold' : 'bg-slate-900 text-slate-300 border border-slate-700'" class="px-3.5 py-1 rounded-full text-xs transition flex items-center gap-1.5 shadow">
+          <i class="fa-solid fa-sidebar"></i> <span>{{ showDrawer ? 'បង្រួមផ្ទាំង' : 'បើកផ្ទាំងជំនួយ' }}</span>
         </button>
       </div>
     </div>
 
-    <!-- ============================================== -->
-    <!-- 🔔 ADMIN ALERT: មានសំណើសុំចូលបន្ទប់ (JOIN REQUESTS) -->
-    <!-- ============================================== -->
+    <!-- Admin Alert for Requests -->
     <div v-if="isAdmin && pendingRequests.length > 0" class="relative z-10 my-2 p-3 rounded-2xl bg-amber-500/15 border border-amber-500/40 flex items-center justify-between gap-3 animate-pulse">
       <div class="flex items-center gap-2 text-xs text-amber-300 font-khmer">
         <i class="fa-solid fa-bell"></i>
@@ -523,9 +524,7 @@ onUnmounted(async () => {
       </button>
     </div>
 
-    <!-- ============================================== -->
-    <!-- 🎙️ VOICE CHANNEL DOCK                          -->
-    <!-- ============================================== -->
+    <!-- Voice Channel -->
     <div class="relative z-10 my-2.5 bg-slate-900/90 border border-slate-800 p-3 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-lg">
       <div class="flex items-center gap-3">
         <div class="flex items-center gap-2">
@@ -536,12 +535,7 @@ onUnmounted(async () => {
         </div>
 
         <div class="flex items-center -space-x-2 overflow-hidden pl-1">
-          <div
-            v-for="vu in voiceUsers"
-            :key="vu.id"
-            class="w-7 h-7 rounded-full bg-slate-800 text-amber-300 ring-2 ring-emerald-400/80 text-[10px] font-bold flex items-center justify-center relative shadow"
-            :title="vu.user_name"
-          >
+          <div v-for="vu in voiceUsers" :key="vu.id" class="w-7 h-7 rounded-full bg-slate-800 text-amber-300 ring-2 ring-emerald-400/80 text-[10px] font-bold flex items-center justify-center relative shadow" :title="vu.user_name">
             {{ vu.user_name.charAt(0) }}
           </div>
         </div>
@@ -552,42 +546,39 @@ onUnmounted(async () => {
       </div>
 
       <div class="flex items-center gap-2">
-        <button
-          @click="toggleVoiceJoin"
-          :class="isInVoice ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 hover:bg-rose-500/30' : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'"
-          class="px-3.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition"
-        >
+        <button @click="toggleVoiceJoin" :class="isInVoice ? 'bg-rose-500/20 text-rose-300 border-rose-500/40' : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'" class="px-3.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition">
           <i :class="isInVoice ? 'fa-solid fa-phone-slash' : 'fa-solid fa-phone'"></i>
           <span>{{ isInVoice ? 'ចាកចេញពី Voice' : 'ចូលរួម Call សំឡេង' }}</span>
         </button>
 
-        <button
-          v-if="isInVoice"
-          @click="toggleMute"
-          :class="isMuted ? 'bg-rose-500 text-white' : 'bg-slate-800 text-emerald-400 border border-slate-700'"
-          class="w-8 h-8 rounded-xl flex items-center justify-center text-xs transition"
-          :title="isMuted ? 'បើក Mic' : 'បិទ Mic'"
-        >
+        <button v-if="isInVoice" @click="toggleMute" :class="isMuted ? 'bg-rose-500 text-white' : 'bg-slate-800 text-emerald-400 border border-slate-700'" class="w-8 h-8 rounded-xl flex items-center justify-center text-xs transition" :title="isMuted ? 'បើក Mic' : 'បិទ Mic'">
           <i :class="isMuted ? 'fa-solid fa-microphone-slash' : 'fa-solid fa-microphone'"></i>
         </button>
       </div>
     </div>
 
-    <!-- 🖥️ SCREEN SHARE PREVIEW -->
+    <!-- 🖥️ SCREEN SHARE: អេក្រង់ខ្លួនឯង -->
     <div v-if="isScreenSharing" class="relative z-10 w-full max-w-2xl mx-auto my-2 rounded-3xl overflow-hidden border border-amber-400/30 bg-black shadow-2xl animate-scale-up">
       <video ref="screenVideoRef" autoplay playsinline class="w-full h-64 sm:h-72 object-contain"></video>
       <div class="absolute top-3 left-3 px-3 py-1 rounded-full bg-black/70 backdrop-blur-md text-amber-300 text-[10px] font-bold border border-amber-500/20 flex items-center gap-1.5">
         <span class="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
-        កំពុង Share អេក្រង់បន្តផ្ទាល់
+        អ្នកកំពុង Share អេក្រង់ផ្ទាល់
       </div>
     </div>
 
-    <!-- ============================================== -->
-    <!-- 2. CENTER: POMODORO & MULTI-TAB WORKSPACE       -->
-    <!-- ============================================== -->
+    <!-- 🖥️ SCREEN SHARE: អេក្រង់អ្នកដទៃ (Remote Screen) -->
+    <div v-if="remoteScreenStream" class="relative z-10 w-full max-w-2xl mx-auto my-2 rounded-3xl overflow-hidden border border-emerald-400/30 bg-black shadow-2xl animate-scale-up">
+      <video ref="remoteScreenVideoRef" autoplay playsinline class="w-full h-64 sm:h-72 object-contain"></video>
+      <div class="absolute top-3 left-3 px-3 py-1 rounded-full bg-black/70 backdrop-blur-md text-emerald-300 text-[10px] font-bold border border-emerald-500/20 flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+        {{ remoteScreenSharerName }} កំពុង Share អេក្រង់
+      </div>
+    </div>
+
+    <!-- Center Workspace -->
     <div class="relative z-10 flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 items-center my-3">
 
-      <!-- POMODORO TIMER -->
+      <!-- Pomodoro Timer -->
       <div :class="showDrawer ? 'lg:col-span-7 xl:col-span-8' : 'lg:col-span-12'" class="flex flex-col items-center justify-center transition-all">
         <div class="bg-slate-900/90 border border-slate-800 p-6 sm:p-8 rounded-3xl shadow-2xl max-w-sm w-full text-center relative">
 
@@ -605,11 +596,7 @@ onUnmounted(async () => {
           </div>
 
           <div class="flex items-center justify-center gap-3">
-            <button
-              @click="isRunning ? (isRunning = false) : startTimer()"
-              :class="isRunning ? 'bg-amber-500 text-slate-950' : 'bg-emerald-400 text-slate-950'"
-              class="px-6 py-2.5 rounded-2xl font-bold text-xs transition shadow-lg hover:scale-105 flex items-center gap-2"
-            >
+            <button @click="isRunning ? (isRunning = false) : startTimer()" :class="isRunning ? 'bg-amber-500 text-slate-950' : 'bg-emerald-400 text-slate-950'" class="px-6 py-2.5 rounded-2xl font-bold text-xs transition shadow-lg hover:scale-105 flex items-center gap-2">
               <i :class="isRunning ? 'fa-solid fa-pause' : 'fa-solid fa-play'"></i>
               <span>{{ isRunning ? 'ផ្អាក (Pause)' : 'ចាប់ផ្តើមផ្តោត' }}</span>
             </button>
@@ -618,7 +605,7 @@ onUnmounted(async () => {
             </button>
           </div>
 
-          <!-- 🎯 គោលដៅសិក្សារបស់ខ្ញុំ (Personal Goal) -->
+          <!-- 🎯 គោលដៅសិក្សា -->
           <div class="mt-6 p-3 rounded-2xl bg-slate-950 border border-amber-500/30">
             <div class="flex items-center justify-between mb-1">
               <span class="text-[10px] font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -642,18 +629,15 @@ onUnmounted(async () => {
 
           <div class="mt-2">
             <button @click="claimReward" class="text-[9px] text-amber-400/80 hover:text-amber-300 underline font-khmer">
-              ⚡ ចុចតេស្តទទួលរង្វាន់ +25 PTS
+              <i class="fa-solid fa-gift"></i> ចុចតេស្តទទួលរង្វាន់ +25 PTS
             </button>
           </div>
         </div>
       </div>
 
-      <!-- ============================================== -->
-      <!-- MULTI-TAB SIDE DRAWER (CHAT / DOCS / MEMBERS)   -->
-      <!-- ============================================== -->
+      <!-- Multi-tab Drawer -->
       <div v-if="showDrawer" class="lg:col-span-5 xl:col-span-4 bg-slate-900/95 border border-slate-800 rounded-3xl p-4 flex flex-col h-88 lg:h-96 shadow-xl animate-fade-in">
 
-        <!-- Tab Selector Bar -->
         <div class="grid grid-cols-3 gap-1 bg-slate-950 p-1 rounded-2xl border border-slate-800 mb-3 shrink-0">
           <button @click="activeTab = 'chat'" :class="activeTab === 'chat' ? 'bg-amber-400 text-slate-950 font-bold' : 'text-slate-400 hover:text-white'" class="py-1.5 rounded-xl text-xs transition flex items-center justify-center gap-1">
             <i class="fa-solid fa-comments text-[11px]"></i> <span>ជជែក</span>
@@ -670,7 +654,7 @@ onUnmounted(async () => {
         <div v-if="activeTab === 'chat'" class="flex-1 flex flex-col overflow-hidden">
           <div ref="chatContainer" class="flex-1 overflow-y-auto space-y-2.5 pr-1 text-xs scrollbar-thin">
             <div v-if="chatMessages.length === 0" class="text-center py-10 text-slate-500 text-[11px] font-khmer">
-              មិនទាន់មានសារនៅឡើយទេ។ ចាប់ផ្តើមជជែកស្វាគមន៍គ្នា! 👋
+              មិនទាន់មានសារនៅឡើយទេ។ ចាប់ផ្តើមជជែកស្វាគមន៍គ្នា! <i class="fa-solid fa-handshake"></i>
             </div>
             <div v-for="msg in chatMessages" :key="msg.id" :class="msg.user_name === (user?.name || '') ? 'items-end' : 'items-start'" class="flex flex-col">
               <span class="text-[10px] text-slate-400 mb-0.5 font-bold text-amber-400">{{ msg.user_name }}</span>
@@ -688,7 +672,7 @@ onUnmounted(async () => {
           </form>
         </div>
 
-        <!-- TAB 2: 📄 IN-ROOM DOCS -->
+        <!-- TAB 2: 📄 DOCS -->
         <div v-else-if="activeTab === 'docs'" class="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
           <div class="text-[10px] text-slate-400 font-khmer mb-2 flex items-center justify-between">
             <span>ឯកសារមេរៀន និងវិញ្ញាសាក្នុងបន្ទប់</span>
@@ -708,10 +692,9 @@ onUnmounted(async () => {
         <!-- TAB 3: 👥 MEMBERS & ADMIN APPROVALS -->
         <div v-else-if="activeTab === 'members'" class="flex-1 overflow-y-auto space-y-3 pr-1 scrollbar-thin">
 
-          <!-- សំណើសុំចូលបន្ទប់ (បង្ហាញតែចំពោះ Admin) -->
           <div v-if="isAdmin && pendingRequests.length > 0" class="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-2">
             <span class="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">
-              🔔 សំណើសុំចូលរៀន (Pending Requests)
+              <i class="fa-solid fa-bell"></i> សំណើសុំចូលរៀន (Pending Requests)
             </span>
             <div v-for="req in pendingRequests" :key="req.id" class="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-950 border border-slate-800">
               <span class="text-xs font-bold text-white">{{ req.user_name }}</span>
@@ -726,36 +709,26 @@ onUnmounted(async () => {
             </div>
           </div>
 
-          <!-- បញ្ជីសមាជិកកំពុងរៀន -->
+          <!-- 👥 បញ្ជីសមាជិកទាំងអស់ក្នុងបន្ទប់ (ឃើញឈ្មោះគ្នា ១០០%) -->
           <div class="space-y-1.5">
-            <span class="text-[10px] text-slate-400 font-khmer block mb-1">សមាជិកក្នុងបន្ទប់៖</span>
+            <span class="text-[10px] text-slate-400 font-khmer block mb-1">សមាជិកកំពុងរៀនក្នុងបន្ទប់ ({{ allParticipants.length }} នាក់)៖</span>
 
-            <!-- ខ្លួនឯង -->
-            <div class="p-2.5 rounded-2xl bg-slate-950 border border-amber-500/20 flex items-center justify-between">
-              <div class="flex items-center gap-2 min-w-0">
-                <span class="w-6 h-6 rounded-full bg-amber-400 text-slate-950 font-bold text-[10px] flex items-center justify-center shrink-0">
-                  {{ user?.name ? user.name.charAt(0) : 'U' }}
-                </span>
-                <div class="min-w-0">
-                  <p class="text-xs font-bold text-white truncate">{{ user?.name || 'You' }} (អ្នក)</p>
-                  <p class="text-[10px] text-amber-300 font-khmer truncate">🎯 {{ myGoal }}</p>
-                </div>
-              </div>
-              <span class="text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 shrink-0">កំពុងរៀន</span>
-            </div>
-
-            <!-- សមាជិកដទៃ -->
-            <div v-for="vu in voiceUsers.filter(u => u.user_name !== (user?.name || ''))" :key="vu.id" class="p-2.5 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+            <div v-for="p in allParticipants" :key="p.id" class="p-2.5 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between">
               <div class="flex items-center gap-2 min-w-0">
                 <span class="w-6 h-6 rounded-full bg-slate-800 text-amber-400 font-bold text-[10px] flex items-center justify-center shrink-0">
-                  {{ vu.user_name.charAt(0) }}
+                  {{ p.user_name.charAt(0) }}
                 </span>
                 <div class="min-w-0">
-                  <p class="text-xs font-bold text-white truncate">{{ vu.user_name }}</p>
-                  <p class="text-[10px] text-slate-400 font-khmer truncate">🎯 {{ vu.study_goal || 'រៀនផ្ដោតអារម្មណ៍' }}</p>
+                  <p class="text-xs font-bold text-white truncate">
+                    {{ p.user_name }}
+                    <span v-if="p.user_name === (user?.name || '')" class="text-amber-400 text-[9px]">(អ្នក)</span>
+                  </p>
+                  <p class="text-[10px] text-slate-400 font-khmer truncate"> <i class="fa-solid fa-bullseye"></i> {{ p.study_goal || 'រៀនផ្ដោតអារម្មណ៍' }}</p>
                 </div>
               </div>
-              <span class="text-[9px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 shrink-0">On Mic</span>
+              <span :class="p.is_in_voice ? 'text-emerald-400 bg-emerald-500/10' : 'text-slate-400 bg-slate-800'" class="text-[9px] px-2 py-0.5 rounded-full shrink-0">
+                {{ p.is_in_voice ? 'On Mic' : 'ក្នុងបន្ទប់' }}
+              </span>
             </div>
           </div>
         </div>
@@ -764,12 +737,9 @@ onUnmounted(async () => {
 
     </div>
 
-    <!-- ============================================== -->
-    <!-- 3. BOTTOM BAR: AMBIENT & STICKERS              -->
-    <!-- ============================================== -->
+    <!-- Bottom Bar: Ambient & Reactions -->
     <div class="relative z-10 flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800/80">
 
-      <!-- Ambient Audio Toggles -->
       <div class="flex items-center gap-1.5 bg-slate-900/90 border border-slate-800 p-1 rounded-2xl">
         <span class="text-[10px] text-slate-400 font-khmer px-2 hidden sm:inline">សំឡេង Ambient:</span>
         <button
@@ -784,25 +754,25 @@ onUnmounted(async () => {
         </button>
       </div>
 
-      <!-- Live Reactions -->
       <div class="flex items-center gap-2">
         <span class="text-xs text-slate-400 font-khmer hidden md:inline">ផ្ញើកម្លាំងចិត្ត៖</span>
-        <button
-          v-for="sticker in stickerOptions"
-          :key="sticker.key"
-          @click="sendSticker(sticker.key)"
-          class="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs hover:scale-110 active:scale-95 transition flex items-center gap-1.5"
-        >
-          <i :class="sticker.icon"></i>
-          <span class="text-slate-300 font-khmer">{{ sticker.label }}</span>
+        <button @click="sendSticker('👏')" class="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs hover:scale-110 active:scale-95 transition flex items-center gap-1.5">
+          <span><i class="fa-solid fa-hand-sparkles"></i></span> <span class="text-slate-300 font-khmer">ស៊ូៗ</span>
+        </button>
+        <button @click="sendSticker('☕')" class="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs hover:scale-110 active:scale-95 transition flex items-center gap-1.5">
+          <span><i class="fa-solid fa-mug-hot"></i></span> <span class="text-slate-300 font-khmer">កាហ្វេ</span>
+        </button>
+        <button @click="sendSticker('💪')" class="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs hover:scale-110 active:scale-95 transition flex items-center gap-1.5">
+          <span><i class="fa-solid fa-dumbbell"></i></span> <span class="text-slate-300 font-khmer">តស៊ូ</span>
+        </button>
+        <button @click="sendSticker('❤️')" class="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs hover:scale-110 active:scale-95 transition">
+          <span><i class="fa-solid fa-heart"></i></span>
         </button>
       </div>
 
     </div>
 
-    <!-- ============================================== -->
-    <!-- 🔍 MODAL អញ្ជើញសមាជិក (INVITE MEMBERS)          -->
-    <!-- ============================================== -->
+    <!-- Invite Modal -->
     <div v-if="showInviteModal" class="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
       <div class="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl relative">
         <button @click="showInviteModal = false" class="absolute top-5 right-5 text-slate-400 hover:text-white">✕</button>
@@ -812,38 +782,29 @@ onUnmounted(async () => {
         </h3>
         <p class="text-xs text-slate-400 font-khmer mb-4">ស្វែងរកឈ្មោះគណនីមិត្តភក្តិដើម្បីផ្ញើលិខិតអញ្ជើញ៖</p>
 
-        <!-- Search Input -->
         <div class="relative mb-3">
           <input
             v-model="searchUserQuery"
             @input="searchUsersToInvite"
             type="text"
-            placeholder="វាយឈ្មោះគណនី (ឧ. ដារា, សុខា, vibul)..."
+            placeholder="វាយឈ្មោះគណនី (ឧ. ដារា, សុខា, fa)..."
             class="w-full bg-slate-950 border border-slate-700 rounded-xl pl-3 pr-9 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
           />
-          <span class="absolute right-3 top-3 text-slate-500 text-xs">🔍</span>
+          <span class="absolute right-3 top-3 text-slate-500 text-xs"><i class="fa-solid fa-search"></i></span>
         </div>
 
-        <!-- Search Results -->
         <div class="space-y-2 max-h-56 overflow-y-auto pr-1">
           <div v-if="isSearchingUser" class="text-center py-4 text-xs text-slate-400">កំពុងស្វែងរក...</div>
           <div v-else-if="searchResults.length === 0 && searchUserQuery" class="text-center py-4 text-xs text-slate-500 font-khmer">
             រកមិនឃើញឈ្មោះនេះទេ។
           </div>
 
-          <div
-            v-for="u in searchResults"
-            :key="u.id"
-            class="p-2.5 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between"
-          >
+          <div v-for="u in searchResults" :key="u.id" class="p-2.5 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between">
             <div>
               <p class="text-xs font-bold text-white">{{ u.name }}</p>
-              <p class="text-[10px] text-amber-400 font-mono">{{ u.rank_title || 'Scholar' }} • {{ u.email }}</p>
+              <p class="text-[10px] text-amber-400 font-mono">{{ u.email }}</p>
             </div>
-            <button
-              @click="inviteUser(u)"
-              class="px-3 py-1 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-[10px] transition"
-            >
+            <button @click="inviteUser(u)" class="px-3 py-1 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-[10px] transition">
               + អញ្ជើញ
             </button>
           </div>
@@ -855,7 +816,7 @@ onUnmounted(async () => {
     <div v-if="showCelebration" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
       <div class="bg-slate-900 border border-amber-500/30 rounded-3xl p-8 max-w-sm w-full text-center shadow-2xl animate-scale-up">
         <div class="w-16 h-16 rounded-full bg-amber-400/20 text-amber-400 flex items-center justify-center text-3xl mx-auto mb-4 animate-bounce">🏆</div>
-        <h3 class="text-xl font-extrabold text-white mb-1">អបអរសាទរ! 🎉</h3>
+        <h3 class="text-xl font-extrabold text-white mb-1">អបអរសាទរ! <i class="fa-solid fa-trophy"></i></h3>
         <p class="text-xs text-slate-400 font-khmer mb-6">អ្នកបានសម្រេចគោលដៅរៀន ២៥ នាទីពេញ!</p>
         <button @click="showCelebration = false" class="w-full py-2.5 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs transition shadow-lg">បន្តរៀនទៀត 🔥</button>
       </div>
@@ -872,12 +833,4 @@ onUnmounted(async () => {
 .animate-float-up {
   animation: floatUp 3s ease-out forwards;
 }
-@keyframes scaleUp {
-  from { transform: scale(0.9); opacity: 0; }
-  to { transform: scale(1); opacity: 1; }
-}
-.animate-scale-up {
-  animation: scaleUp 0.25s ease-out forwards;
-}
 </style>
-
