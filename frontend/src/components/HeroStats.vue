@@ -24,6 +24,7 @@ onMounted(() => {
 
 <template>
   <div class="mb-8">
+    <h1>This's just demo Project not real website so you can't used some option </h1>
     <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs text-slate-300 mb-4">
       <span class="flex items-center gap-1.5">
         <i class="fa-solid fa-mug-saucer text-amber-400"></i> Phnom Penh Virtual Hub • សាលាសិក្សា
