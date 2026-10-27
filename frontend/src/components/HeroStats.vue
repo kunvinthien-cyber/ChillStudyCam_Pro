@@ -8,12 +8,12 @@ const userStats = computed(() => {
   const currentUser = user.value || {}
 
   return {
-  name: currentUser.name || 'Chamroeun',
-  streakDays: currentUser.streak_days ?? currentUser.streakDays ?? 7,
-  rankTitle: currentUser.rank_title ?? currentUser.rankTitle ?? 'Hanuman IV',
-  studiedHours: currentUser.studied_hours ?? currentUser.studiedHours ?? 2.5,
-  targetHours: currentUser.target_hours ?? currentUser.targetHours ?? 4.0,
-  activeStudentsLive: currentUser.active_students_live ?? currentUser.activeStudentsLive ?? 142
+    name: currentUser.name || 'Chamroeun',
+    streakDays: currentUser.streak_days ?? currentUser.streakDays ?? 7,
+    rankTitle: currentUser.rank_title ?? currentUser.rankTitle ?? 'Hanuman IV',
+    studiedHours: currentUser.studied_hours ?? currentUser.studiedHours ?? 2.5,
+    targetHours: currentUser.target_hours ?? currentUser.targetHours ?? 4.0,
+    activeStudentsLive: currentUser.active_students_live ?? currentUser.activeStudentsLive ?? 142
   }
 })
 
@@ -24,20 +24,36 @@ onMounted(() => {
 
 <template>
   <div class="mb-8">
-    <h1 class="bg-zinc-200 text-white text-2xl p-4">This's just demo Project not real website so you can't used some option </h1>
+    <div class="mb-5 overflow-hidden rounded-2xl border border-amber-400/30 bg-gradient-to-r from-slate-900 via-slate-900 to-amber-500/10 shadow-lg shadow-amber-500/10">
+      <div class="flex flex-col items-start justify-between gap-3 px-4 py-3 sm:flex-row sm:items-center">
+        <div class="flex items-center gap-3">
+          <div class="flex h-10 w-10 items-center justify-center rounded-xl border border-amber-400/25 bg-amber-500/10 text-lg text-amber-300">
+            <i class="fa-solid fa-circle-info"></i>
+          </div>
+          <div>
+            <p class="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-200/80">Demo notice</p>
+            <p class="text-sm font-medium text-slate-100">This is a demo project, not a real website, so some options are unavailable.</p>
+          </div>
+        </div>
+        <span class="inline-flex items-center rounded-full border border-amber-300/30 bg-amber-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-amber-200">
+          Preview only
+        </span>
+      </div>
+    </div>
+
     <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs text-slate-300 mb-4">
       <span class="flex items-center gap-1.5">
         <i class="fa-solid fa-mug-saucer text-amber-400"></i> Phnom Penh Virtual Hub • សាលាសិក្សា
       </span>
       <span class="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-    <span class="text-emerald-400 font-medium">{{ userStats.activeStudentsLive }} Students Live</span>
+      <span class="text-emerald-400 font-medium">{{ userStats.activeStudentsLive }} Students Live</span>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
       <div class="lg:col-span-6">
         <h1 class="text-3xl lg:text-4xl font-extrabold text-white tracking-tight leading-tight">
           Welcome back,<br />
-        {{ userStats.name }}! Ready to study today?
+          {{ userStats.name }}! Ready to study today?
           <i class="fa-solid fa-mug-hot text-amber-400 text-2xl ml-1"></i>
         </h1>
         <p class="mt-3 text-sm text-slate-400 leading-relaxed font-light">
@@ -54,7 +70,7 @@ onMounted(() => {
           </div>
           <div>
             <span class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold block">Consistency</span>
-          <div class="text-lg font-bold text-white leading-none mt-1">{{ userStats.streakDays }} Days</div>
+            <div class="text-lg font-bold text-white leading-none mt-1">{{ userStats.streakDays }} Days</div>
             <span class="text-xs text-amber-400/90 font-medium">Streak</span>
           </div>
         </div>
@@ -65,8 +81,8 @@ onMounted(() => {
             <i class="fa-solid fa-shield-halved text-lg"></i>
           </div>
           <div>
-            <span class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold block">Rank & Title</span>
-          <div class="text-base font-bold text-white leading-none mt-1">{{ userStats.rankTitle }}</div>
+            <span class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold block">Rank &amp; Title</span>
+            <div class="text-base font-bold text-white leading-none mt-1">{{ userStats.rankTitle }}</div>
           </div>
         </div>
 
@@ -77,7 +93,7 @@ onMounted(() => {
           </div>
           <div>
             <span class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold block">Daily Target</span>
-          <div class="text-sm font-bold text-white mt-1">{{ userStats.studiedHours }} / {{ userStats.targetHours }} hrs</div>
+            <div class="text-sm font-bold text-white mt-1">{{ userStats.studiedHours }} / {{ userStats.targetHours }} hrs</div>
           </div>
         </div>
       </div>
